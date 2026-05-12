@@ -88,6 +88,7 @@ export async function generateMealPlan({
   mealCount,
   seedRecipeIds,
   styleNote,
+  pantry,
 }) {
   // Editable system prompt + structural JSON-only suffix.
   const editablePrompt = store.getConfig("system_prompt") || "";
@@ -187,6 +188,14 @@ Use this exact structure:
 
   if (styleNote && styleNote.trim()) {
     userParts.push("", `Additional guidance for this week: ${styleNote.trim()}`);
+  }
+
+  if (pantry && pantry.trim()) {
+    userParts.push(
+      "",
+      "Already on hand (work these into the meals where natural — don't force them, don't restrict the menu to only these):",
+      pantry.trim(),
+    );
   }
 
   if (lastPlan?.feedback_text) {

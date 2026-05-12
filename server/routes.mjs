@@ -84,6 +84,7 @@ export function createRoutes({ store, scheduler }) {
       mealCount: body?.meal_count,
       seedRecipeIds: Array.isArray(body?.seed_recipe_ids) ? body.seed_recipe_ids : [],
       styleNote: body?.style_note ? String(body.style_note) : "",
+      pantry: body?.pantry ? String(body.pantry) : "",
     };
     // Fire-and-forget — the UI polls for completion
     scheduler.runNow(opts).catch((err) => console.error("[routes] runNow:", err));

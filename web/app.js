@@ -462,6 +462,7 @@ let generateState = {
   mealCount: null,
   anchors: [], // array of { id, name }
   styleNote: "",
+  pantry: "",
 };
 
 const RUNNING_MESSAGES = [
@@ -556,6 +557,18 @@ async function viewGenerate() {
       el("span", { class: "label" }, "Style note (optional)"),
       noteTa,
     ),
+  );
+
+  // Pantry — ingredients we already have, soft hint to the LLM
+  const pantryTa = el("textarea", { rows: 2, placeholder: "Optional — e.g. 'kewpie mayo, sour cream, half a cabbage'" });
+  pantryTa.value = generateState.pantry;
+  pantryTa.addEventListener("input", () => { generateState.pantry = pantryTa.value; });
+  view.append(
+    el("label", { class: "field" },
+      el("span", { class: "label" }, "On hand (optional)"),
+      el("div", { class: "row__value", style: "margin-bottom:8px;" }, "Ingredients to work in where natural — comma-separated or free text."),
+      pantryTa,
+    ),
     el("hr", { class: "rule" }),
   );
 
@@ -600,6 +613,7 @@ async function viewGenerate() {
           meal_count: generateState.mealCount,
           seed_recipe_ids: generateState.anchors.map((a) => a.id),
           style_note: generateState.styleNote,
+          pantry: generateState.pantry,
         }),
       });
       // Poll for completion
