@@ -2,6 +2,7 @@
 
 import { Hono } from "hono";
 import { llmHealth } from "./llm.mjs";
+import { formatMealPlanMarkdown, regenerateMeal } from "./generator.mjs";
 
 export function createRoutes({ store, scheduler }) {
   const api = new Hono();
@@ -34,6 +35,44 @@ export function createRoutes({ store, scheduler }) {
     const plan = store.setPlanFeedback(c.req.param("id"), text);
     if (!plan) return c.json({ error: "not_found" }, 404);
     return c.json({ plan });
+  });
+
+  api.delete("/plans/:id", (c) => {
+    const ok = store.deletePlan(c.req.param("id"));
+    if (!ok) return c.json({ error: "not_found" }, 404);
+    return c.json({ ok: true, unread_count: store.getUnreadCount() });
+  });
+
+  api.post("/plans/:planId/meals/:mealId/regen", async (c) => {
+    if (scheduler.getState().running) {
+      return c.json({ ok: false, status: "already-running" }, 409);
+    }
+    const plan = store.getPlan(c.req.param("planId"));
+    if (!plan) return c.json({ error: "plan_not_found" }, 404);
+    const mealId = c.req.param("mealId");
+    const idx = (plan.meals || []).findIndex((m) => m.id === mealId);
+    if (idx < 0) return c.json({ error: "meal_not_found" }, 404);
+
+    try {
+      const newMeal = await regenerateMeal({ store, plan, replaceMealId: mealId });
+      const meals = [...plan.meals];
+      meals[idx] = { ...newMeal };
+
+      // Rebuild grocery list and content from the new meal set
+      const grocery = consolidateGrocery(meals);
+      const summary = meals.map((m) => m.name || "Untitled").join(", ");
+      const md = formatMealPlanMarkdown({ meals, grocery_list: grocery, summary });
+
+      const updated = store.updatePlanMeals(plan.id, {
+        meals,
+        grocery_list: grocery,
+        summary,
+        content: md,
+      });
+      return c.json({ plan: withSavedFlags(updated, store), meal: newMeal });
+    } catch (err) {
+      return c.json({ error: String(err?.message || err) }, 500);
+    }
   });
 
   api.post("/plans/run", async (c) => {
@@ -146,4 +185,22 @@ function withSavedFlags(plan, store) {
     ...plan,
     meals: plan.meals.map((m) => ({ ...m, saved: m.id ? store.isRecipeSaved(m.id) : false })),
   };
+}
+
+// Naive grocery consolidation — dedupes identical strings. The LLM produces
+// detailed lines like "1 lb chicken breast" so exact-string matching catches
+// the common case; anything finer requires the LLM and we'd rather avoid the
+// round trip on a single-meal swap.
+function consolidateGrocery(meals) {
+  const seen = new Set();
+  const out = [];
+  for (const meal of meals) {
+    for (const ing of meal.ingredients || []) {
+      const key = String(ing).trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(String(ing).trim());
+    }
+  }
+  return out;
 }

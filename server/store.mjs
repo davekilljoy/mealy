@@ -207,6 +207,8 @@ export class MealPlannerStore {
     this.updatePlanFeedbackStmt = this.db.prepare("UPDATE meal_plans SET feedback_text = ?, feedback_at_ms = ? WHERE id = ?");
     this.markPlanReadStmt     = this.db.prepare("UPDATE meal_plans SET read_at_ms = ? WHERE id = ? AND read_at_ms IS NULL");
     this.countUnreadStmt      = this.db.prepare("SELECT COUNT(*) AS c FROM meal_plans WHERE read_at_ms IS NULL");
+    this.deletePlanStmt       = this.db.prepare("DELETE FROM meal_plans WHERE id = ?");
+    this.updatePlanMealsStmt  = this.db.prepare("UPDATE meal_plans SET meals_json = ?, grocery_list_json = ?, summary = ?, content = ? WHERE id = ?");
 
     this.insertPreferenceStmt = this.db.prepare(
       `INSERT INTO meal_preferences (id, created_at_ms, kind, value, active) VALUES (?, ?, ?, ?, 1)`
@@ -293,6 +295,22 @@ export class MealPlannerStore {
   getUnreadCount() {
     const row = this.countUnreadStmt.get();
     return Number(row?.c || 0);
+  }
+
+  deletePlan(id) {
+    const result = this.deletePlanStmt.run(String(id));
+    return Number(result?.changes || 0) > 0;
+  }
+
+  updatePlanMeals(id, { meals, grocery_list, summary, content }) {
+    this.updatePlanMealsStmt.run(
+      encodeJson(meals, []),
+      encodeJson(grocery_list, []),
+      summary == null ? null : String(summary),
+      content == null ? null : String(content),
+      String(id),
+    );
+    return this.getPlan(id);
   }
 
   // ---------------- Preferences ----------------

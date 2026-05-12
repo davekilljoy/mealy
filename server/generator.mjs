@@ -223,6 +223,80 @@ Use this exact structure:
   };
 }
 
+// Regenerate a single meal inside an existing plan. The new meal must be
+// different from the meal it's replacing AND different from the other meals
+// in the plan. Preferences and seasonal context still apply.
+export async function regenerateMeal({ store, plan, replaceMealId }) {
+  const meals = Array.isArray(plan.meals) ? plan.meals : [];
+  const target = meals.find((m) => m.id === replaceMealId);
+  if (!target) throw new Error(`meal ${replaceMealId} not found in plan ${plan.id}`);
+
+  const others = meals.filter((m) => m.id !== replaceMealId);
+  const preferences = store.listPreferences();
+
+  const editablePrompt = store.getConfig("system_prompt") || "";
+  const system = `${editablePrompt}
+
+You are replacing ONE dinner in an existing weekly plan. Generate exactly one new dinner that:
+- Is different in cuisine, protein, and cooking style from the meal being replaced
+- Does NOT duplicate or closely resemble the other meals in the plan
+- Still follows all the guidelines above
+
+Respond in JSON only — a single meal object. No markdown, no explanation.
+Use this exact structure:
+{"name": "...", "description": "...", "servings": 3, "ingredients": ["1 lb chicken breast", "2 tbsp soy sauce", "..."], "instructions": ["Step 1...", "Step 2..."], "prep_time_min": 0, "cook_time_min": 0}`;
+
+  const userParts = [`Replace this meal in the plan: "${target.name}"${target.description ? ` — ${target.description}` : ""}.`];
+
+  if (others.length) {
+    userParts.push("", "The other meals in the plan (do NOT match these in cuisine, protein, or style):");
+    for (const m of others) {
+      userParts.push(`- ${m.name}${m.description ? ` (${m.description})` : ""}`);
+    }
+  }
+
+  if (preferences.length) {
+    const grouped = {};
+    for (const p of preferences) {
+      if (!grouped[p.kind]) grouped[p.kind] = [];
+      grouped[p.kind].push(p.value);
+    }
+    userParts.push("", "Family preferences:");
+    for (const [kind, values] of Object.entries(grouped)) {
+      const label = kind.charAt(0).toUpperCase() + kind.slice(1);
+      userParts.push(`- ${label}: ${values.join(", ")}`);
+    }
+  }
+
+  const seasonal = getSeasonalContext();
+  if (seasonal) userParts.push("", seasonal);
+
+  userParts.push(
+    "",
+    "Output a single meal object only — not an array, not an object with a 'meals' key.",
+  );
+
+  const raw = await complete({
+    system,
+    user: userParts.join("\n"),
+    temperature: 0.6,
+    maxTokens: 2500,
+  });
+
+  const parsed = extractJson(raw);
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`Failed to parse meal JSON from LLM response: ${raw.slice(0, 300)}`);
+  }
+  // Unwrap if the model put it inside { meal: ... } or returned a single-element { meals: [...] }
+  const mealObj = parsed.meal || (Array.isArray(parsed.meals) && parsed.meals[0]) || parsed;
+  if (!mealObj?.name) {
+    throw new Error(`LLM response missing meal name: ${raw.slice(0, 300)}`);
+  }
+
+  mealObj.id = randomUUID();
+  return mealObj;
+}
+
 export async function extractPreferencesFromFeedback({ feedbackText }) {
   if (!feedbackText || !feedbackText.trim()) return [];
   const system = `You extract food preferences from meal feedback. Given free-text feedback about meals, extract structured preferences.

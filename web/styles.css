@@ -68,11 +68,18 @@ html, body {
   line-height: 1.62;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  overscroll-behavior-y: none;
 }
 
+html { height: 100%; }
+
 body {
-  min-height: 100vh;
+  min-height: 100dvh;
   padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 900px) {
+  body { padding-bottom: 0; }
 }
 
 a {
@@ -197,7 +204,6 @@ button {
 
 @media (min-width: 900px) {
   .tabbar { display: none; }
-  body { padding-bottom: 0; }
 }
 
 /* ============ MAIN ============ */
@@ -333,7 +339,7 @@ button {
 
 .meal__head {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: 1fr auto auto;
   gap: 16px;
   align-items: baseline;
   margin-bottom: 12px;
@@ -378,6 +384,77 @@ button {
   60%  { transform: scale(1.08); }
   100% { transform: scale(1.0); }
 }
+
+.meal__redo {
+  background: none;
+  border: 0;
+  padding: 8px;
+  margin: -8px;
+  font-size: 1.25rem;
+  color: var(--ink-3);
+  line-height: 1;
+  transition: color 200ms var(--easing), transform 600ms var(--easing);
+}
+.meal__redo:hover:not(:disabled) { color: var(--accent); }
+.meal__redo:disabled { cursor: progress; }
+.meal__redo.spin { animation: spin 1.4s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.danger-zone {
+  margin-top: 56px;
+  padding-top: 32px;
+  border-top: 1px solid var(--rule);
+}
+.danger-zone .eyebrow { color: var(--danger); }
+.btn--danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+.btn--danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--paper);
+}
+
+/* warning dialog (native <dialog>, styled to fit the paper aesthetic) */
+dialog.warn {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  max-width: 440px;
+  width: calc(100% - 32px);
+}
+dialog.warn::backdrop {
+  background: oklch(22% 0.02 78 / 0.45);
+  backdrop-filter: blur(2px);
+}
+dialog.warn .warn__inner {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 28px 28px 20px;
+  box-shadow: 0 16px 48px oklch(22% 0.02 78 / 0.22);
+}
+dialog.warn h2 {
+  font-family: var(--display);
+  font-variation-settings: "opsz" 144;
+  font-weight: 380;
+  font-size: 1.5rem;
+  line-height: 1.2;
+  margin: 0 0 12px;
+  color: var(--ink);
+}
+dialog.warn p {
+  margin: 0 0 24px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+dialog.warn .warn__actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+dialog.warn .warn__actions .btn { min-height: 44px; padding: 0 18px; }
 
 .meal__desc {
   color: var(--ink-2);
@@ -446,8 +523,7 @@ button {
   grid-template-columns: 22px 1fr;
   align-items: baseline;
   gap: 12px;
-  padding: 6px 0;
-  border-bottom: 1px dashed var(--rule-soft);
+  padding: 10px 0;
 }
 .grocery li::before {
   content: "";

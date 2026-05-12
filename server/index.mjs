@@ -69,7 +69,7 @@ async function serveStatic(c, requestedPath) {
       status: 200,
       headers: {
         "Content-Type": type,
-        "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=300",
+        "Cache-Control": ext === ".woff2" ? "public, max-age=2592000, immutable" : "no-cache",
       },
     });
   } catch (err) {
