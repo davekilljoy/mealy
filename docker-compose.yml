@@ -1,0 +1,19 @@
+services:
+  mealy:
+    build: .
+    container_name: mealy
+    restart: unless-stopped
+    ports:
+      - "5180:5180"
+    volumes:
+      - ./data:/app/data
+    environment:
+      PORT: 5180
+      HOST: 0.0.0.0
+      DB_PATH: /app/data/meal-planner.sqlite
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434}
+      LLM_MODEL: ${LLM_MODEL:-qwen3:14b}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_QWEN_MODE: ${LLM_QWEN_MODE:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
