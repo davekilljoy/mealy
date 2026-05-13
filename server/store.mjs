@@ -71,6 +71,8 @@ function mapSavedRecipeRow(row) {
     prep_time_min: row.prep_time_min == null ? null : Number(row.prep_time_min),
     cook_time_min: row.cook_time_min == null ? null : Number(row.cook_time_min),
     recipe: safeJsonParse(row.recipe_json, {}),
+    notes: row.notes == null ? null : String(row.notes),
+    notes_updated_at_ms: row.notes_updated_at_ms == null ? null : Number(row.notes_updated_at_ms),
   };
 }
 
@@ -191,6 +193,8 @@ export class MealPlannerStore {
     safeAdd("ALTER TABLE meal_plans ADD COLUMN headline TEXT");
     safeAdd("ALTER TABLE meal_plans ADD COLUMN card_summary TEXT");
     safeAdd("ALTER TABLE meal_plans ADD COLUMN bridge_ingredients_json TEXT NOT NULL DEFAULT '[]'");
+    safeAdd("ALTER TABLE saved_recipes ADD COLUMN notes TEXT");
+    safeAdd("ALTER TABLE saved_recipes ADD COLUMN notes_updated_at_ms INTEGER");
   }
 
   prepareStmts() {
@@ -239,6 +243,9 @@ export class MealPlannerStore {
     this.selectSavedRecipeByMealIdStmt = this.db.prepare("SELECT * FROM saved_recipes WHERE meal_id = ? LIMIT 1");
     this.selectSavedRecipesStmt    = this.db.prepare("SELECT * FROM saved_recipes ORDER BY created_at_ms DESC LIMIT ?");
     this.deleteSavedRecipeByMealIdStmt = this.db.prepare("DELETE FROM saved_recipes WHERE meal_id = ?");
+    this.updateSavedRecipeNotesStmt = this.db.prepare(
+      "UPDATE saved_recipes SET notes = ?, notes_updated_at_ms = ? WHERE id = ?"
+    );
   }
 
   seedDefaults() {
@@ -389,6 +396,14 @@ export class MealPlannerStore {
 
   unsaveRecipe(mealId) {
     this.deleteSavedRecipeByMealIdStmt.run(String(mealId));
+  }
+
+  setRecipeNotes(id, notes) {
+    const recipe = this.getSavedRecipe(id);
+    if (!recipe) return null;
+    const text = notes == null ? null : String(notes).trim();
+    this.updateSavedRecipeNotesStmt.run(text || null, Date.now(), String(id));
+    return this.getSavedRecipe(id);
   }
 
   isRecipeSaved(mealId) {

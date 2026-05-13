@@ -327,6 +327,9 @@ button {
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
 }
+.recipe-row__notes {
+  color: var(--accent);
+}
 
 /* ============ MEAL BLOCK ============ */
 

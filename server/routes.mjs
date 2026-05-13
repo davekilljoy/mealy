@@ -123,6 +123,14 @@ export function createRoutes({ store, scheduler }) {
     return c.json({ ok: true });
   });
 
+  api.patch("/recipes/:id", async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const notes = body?.notes == null ? "" : String(body.notes);
+    const updated = store.setRecipeNotes(c.req.param("id"), notes);
+    if (!updated) return c.json({ error: "not_found" }, 404);
+    return c.json({ recipe: updated });
+  });
+
   // ------ preferences ------
   api.get("/preferences", (c) => c.json({ preferences: store.listPreferences() }));
 

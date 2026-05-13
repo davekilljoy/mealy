@@ -714,7 +714,10 @@ async function viewRecipes() {
         ),
         el("h2", { class: "editorial-row__headline" }, r.name),
         r.description ? el("p", { class: "editorial-row__summary" }, r.description) : null,
-        el("div", { class: "editorial-row__meta" }, recipeMeta(r)),
+        el("div", { class: "editorial-row__meta" },
+          recipeMeta(r),
+          r.notes ? el("span", { class: "recipe-row__notes", title: "Has notes" }, " · ✎ noted") : null,
+        ),
       ),
     );
   }
@@ -753,8 +756,46 @@ async function viewRecipeDetail(id) {
       el("h1",  { class: "page-title" }, meal.name || "Untitled"),
       meal.description ? el("p", { class: "italic-lede" }, meal.description) : null,
     ),
-    el("hr", { class: "rule-thick" }),
     mealBlock(meal, 1, recipe.source_plan_id || ""),
+  );
+
+  // Notes
+  const notesTa = el("textarea", {
+    rows: 4,
+    placeholder: "What worked, what to tweak, swaps you'd remember next time…",
+  });
+  notesTa.value = recipe.notes || "";
+  const notesSave = el("button", { class: "btn", type: "button" }, "Save notes");
+  const notesMeta = el("div", { class: "editorial-row__meta", style: "margin-top:8px;" },
+    recipe.notes_updated_at_ms ? `Last saved ${relTime(recipe.notes_updated_at_ms)}` : "",
+  );
+  notesSave.addEventListener("click", async () => {
+    notesSave.disabled = true;
+    notesSave.textContent = "Saving…";
+    try {
+      const res = await api(`/recipes/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ notes: notesTa.value }),
+      });
+      notesMeta.textContent = res.recipe?.notes_updated_at_ms
+        ? `Last saved ${relTime(res.recipe.notes_updated_at_ms)}`
+        : "";
+      toast("Notes saved");
+    } catch (err) {
+      toast(`Save failed: ${err.message}`);
+    } finally {
+      notesSave.disabled = false;
+      notesSave.textContent = "Save notes";
+    }
+  });
+
+  view.append(
+    el("h2", { class: "section-head" }, "Notes"),
+    el("label", { class: "field" },
+      el("span", { class: "label" }, "Personal notes on this recipe"),
+      notesTa),
+    notesSave,
+    notesMeta,
   );
 }
 
