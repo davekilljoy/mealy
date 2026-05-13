@@ -606,7 +606,7 @@ a.btn--ghost {
   color: var(--accent);
   border: 1px solid var(--accent);
 }
-button.btn--ghost:hover,
+button.btn--ghost:hover:not(:disabled),
 a.btn--ghost:hover {
   background: transparent;
   color: var(--accent-2);
