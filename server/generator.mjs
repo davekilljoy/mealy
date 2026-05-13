@@ -235,7 +235,7 @@ Use this exact structure:
 // Regenerate a single meal inside an existing plan. The new meal must be
 // different from the meal it's replacing AND different from the other meals
 // in the plan. Preferences and seasonal context still apply.
-export async function regenerateMeal({ store, plan, replaceMealId }) {
+export async function regenerateMeal({ store, plan, replaceMealId, steerNote }) {
   const meals = Array.isArray(plan.meals) ? plan.meals : [];
   const target = meals.find((m) => m.id === replaceMealId);
   if (!target) throw new Error(`meal ${replaceMealId} not found in plan ${plan.id}`);
@@ -279,6 +279,10 @@ Use this exact structure:
 
   const seasonal = getSeasonalContext();
   if (seasonal) userParts.push("", seasonal);
+
+  if (steerNote && steerNote.trim()) {
+    userParts.push("", `User guidance for the replacement (follow this closely): ${steerNote.trim()}`);
+  }
 
   userParts.push(
     "",

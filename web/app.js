@@ -49,27 +49,45 @@ async function api(path, opts = {}) {
   return data;
 }
 
-function warn({ title, body, confirmLabel = "Confirm", cancelLabel = "Cancel", danger = false }) {
+function warn({ title, body, confirmLabel = "Confirm", cancelLabel = "Cancel", danger = false, input = null }) {
   return new Promise((resolve) => {
     const dlg = el("dialog", { class: "warn" });
     const cancel = el("button", { class: "btn btn--ghost", type: "button" }, cancelLabel);
     const ok = el("button", { class: danger ? "btn btn--danger" : "btn", type: "button" }, confirmLabel);
-    cancel.addEventListener("click", () => { dlg.close(); cleanup(false); });
-    ok.addEventListener("click",     () => { dlg.close(); cleanup(true); });
-    dlg.addEventListener("cancel", (e) => { e.preventDefault(); dlg.close(); cleanup(false); });
-    function cleanup(result) {
+    let inputEl = null;
+    if (input) {
+      inputEl = el("textarea", {
+        class: "warn__input",
+        rows: input.rows || 3,
+        placeholder: input.placeholder || "",
+        "aria-label": input.label || "Notes",
+      });
+    }
+    function done(confirmed) {
+      dlg.close();
+      const value = inputEl ? inputEl.value.trim() : "";
+      const result = input ? { ok: confirmed, value: confirmed ? value : "" } : confirmed;
       setTimeout(() => dlg.remove(), 0);
       resolve(result);
     }
-    dlg.append(
-      el("div", { class: "warn__inner" },
-        el("h2", {}, title),
-        el("p",  {}, body),
-        el("div", { class: "warn__actions" }, cancel, ok),
-      ),
+    cancel.addEventListener("click", () => done(false));
+    ok.addEventListener("click",     () => done(true));
+    dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(false); });
+    const inner = el("div", { class: "warn__inner" },
+      el("h2", {}, title),
+      el("p",  {}, body),
     );
+    if (inputEl) {
+      inner.append(
+        input.label ? el("label", { class: "warn__input-label" }, input.label) : null,
+        inputEl,
+      );
+    }
+    inner.append(el("div", { class: "warn__actions" }, cancel, ok));
+    dlg.append(inner);
     document.body.append(dlg);
     dlg.showModal();
+    if (inputEl) inputEl.focus();
   });
 }
 
@@ -233,9 +251,10 @@ async function viewPlanDetail(id) {
     ),
   );
 
-  async function handleRegen(oldMeal, oldNode) {
+  async function handleRegen(oldMeal, oldNode, steerNote) {
     const res = await api(`/plans/${plan.id}/meals/${encodeURIComponent(oldMeal.id)}/regen`, {
       method: "POST",
+      body: JSON.stringify({ steer_note: steerNote || "" }),
     });
     const updatedPlan = res.plan;
     const idx = (updatedPlan.meals || []).findIndex((m) => m.id !== oldMeal.id && !document.querySelector(`[data-meal-id="${m.id}"]`));
@@ -390,18 +409,23 @@ function mealBlock(meal, num, planId, { onRegen } = {}) {
       "aria-label": "Regenerate this meal",
     }, "↻");
     redo.addEventListener("click", async () => {
-      const ok = await warn({
+      const result = await warn({
         title: "Replace this meal?",
         body: `“${meal.name}” will be swapped for a brand-new meal in the same slot. The grocery list will be rebuilt. This can take up to a minute.`,
         confirmLabel: "Regenerate",
         cancelLabel: "Keep this meal",
+        input: {
+          label: "Steer the swap (optional)",
+          placeholder: "e.g. 'something lighter', 'use the leftover cabbage', 'no pasta'",
+          rows: 3,
+        },
       });
-      if (!ok) return;
+      if (!result.ok) return;
       redo.disabled = true;
       star.disabled = true;
       redo.classList.add("spin");
       try {
-        await onRegen(meal, wrap);
+        await onRegen(meal, wrap, result.value);
       } catch (err) {
         toast(`Regen failed: ${err.message}`);
       } finally {

@@ -53,8 +53,11 @@ export function createRoutes({ store, scheduler }) {
     const idx = (plan.meals || []).findIndex((m) => m.id === mealId);
     if (idx < 0) return c.json({ error: "meal_not_found" }, 404);
 
+    const body = await c.req.json().catch(() => ({}));
+    const steerNote = body?.steer_note ? String(body.steer_note) : "";
+
     try {
-      const newMeal = await regenerateMeal({ store, plan, replaceMealId: mealId });
+      const newMeal = await regenerateMeal({ store, plan, replaceMealId: mealId, steerNote });
       const meals = [...plan.meals];
       meals[idx] = { ...newMeal };
 
