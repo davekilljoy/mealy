@@ -41,7 +41,7 @@ function ingredientBase(ing) {
   return String(ing || "").replace(QTY_RE, "").trim().toLowerCase();
 }
 
-function extractJson(text) {
+export function extractJson(text) {
   try { return JSON.parse(text); } catch (_e) {}
   const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
   if (fence) {

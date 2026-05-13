@@ -3,6 +3,8 @@
 import { Hono } from "hono";
 import { llmHealth } from "./llm.mjs";
 import { formatMealPlanMarkdown, regenerateMeal } from "./generator.mjs";
+import { tagRecipe } from "./tagger.mjs";
+import { RECIPE_TAG_TAXONOMY, LLM_TAG_DIMENSIONS } from "./taxonomy.mjs";
 
 export function createRoutes({ store, scheduler }) {
   const api = new Hono();
@@ -114,7 +116,13 @@ export function createRoutes({ store, scheduler }) {
     if (!meal_id || !meal || typeof meal !== "object") {
       return c.json({ error: "meal_id and meal required" }, 400);
     }
-    const saved = store.saveRecipe({ meal_id, source_plan_id, meal });
+    // Skip the LLM round-trip if the recipe is already saved — saveRecipe
+    // short-circuits, so we'd be tagging for nothing.
+    let tags = [];
+    if (!store.getSavedRecipeByMealId(meal_id)) {
+      tags = await tagRecipe(meal);
+    }
+    const saved = store.saveRecipe({ meal_id, source_plan_id, meal, tags });
     return c.json({ recipe: saved }, 201);
   });
 
@@ -129,6 +137,41 @@ export function createRoutes({ store, scheduler }) {
     const updated = store.setRecipeNotes(c.req.param("id"), notes);
     if (!updated) return c.json({ error: "not_found" }, 404);
     return c.json({ recipe: updated });
+  });
+
+  api.post("/recipes/:id/retag", async (c) => {
+    const id = c.req.param("id");
+    const recipe = store.getSavedRecipe(id);
+    if (!recipe) return c.json({ error: "not_found" }, 404);
+    const tags = await tagRecipe(recipe.recipe || recipe);
+    const updated = store.setRecipeTags(id, tags);
+    return c.json({ recipe: updated });
+  });
+
+  // Bulk backfill: tag every saved recipe missing at least one LLM-driven
+  // dimension. Runs sequentially so we don't slam the local LLM.
+  api.post("/recipes/retag-untagged", async (c) => {
+    const all = store.listSavedRecipes(500);
+    const untagged = all.filter((r) => {
+      const present = new Set((r.tags || [])
+        .map((t) => String(t).split(":")[0])
+        .filter(Boolean));
+      return LLM_TAG_DIMENSIONS.some((dim) => !present.has(dim));
+    });
+    let updated = 0;
+    let failed = 0;
+    for (const r of untagged) {
+      try {
+        const tags = await tagRecipe(r.recipe || r);
+        store.setRecipeTags(r.id, tags);
+        if (tags.length) updated += 1;
+        else failed += 1;
+      } catch (err) {
+        console.warn(`[retag-untagged] ${r.id} failed: ${err?.message || err}`);
+        failed += 1;
+      }
+    }
+    return c.json({ ok: true, scanned: untagged.length, updated, failed });
   });
 
   // ------ preferences ------
@@ -170,6 +213,9 @@ export function createRoutes({ store, scheduler }) {
     scheduler.runNow().catch((err) => console.error("[routes] scheduler run-now:", err));
     return c.json({ ok: true, status: "running" }, 202);
   });
+
+  // ------ taxonomy ------
+  api.get("/taxonomy", (c) => c.json({ taxonomy: RECIPE_TAG_TAXONOMY }));
 
   // ------ llm health ------
   api.get("/llm/health", async (c) => c.json(await llmHealth()));

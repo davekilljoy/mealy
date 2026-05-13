@@ -73,6 +73,7 @@ function mapSavedRecipeRow(row) {
     recipe: safeJsonParse(row.recipe_json, {}),
     notes: row.notes == null ? null : String(row.notes),
     notes_updated_at_ms: row.notes_updated_at_ms == null ? null : Number(row.notes_updated_at_ms),
+    tags: safeJsonParse(row.tags_json, []),
   };
 }
 
@@ -195,6 +196,7 @@ export class MealPlannerStore {
     safeAdd("ALTER TABLE meal_plans ADD COLUMN bridge_ingredients_json TEXT NOT NULL DEFAULT '[]'");
     safeAdd("ALTER TABLE saved_recipes ADD COLUMN notes TEXT");
     safeAdd("ALTER TABLE saved_recipes ADD COLUMN notes_updated_at_ms INTEGER");
+    safeAdd("ALTER TABLE saved_recipes ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'");
   }
 
   prepareStmts() {
@@ -236,15 +238,21 @@ export class MealPlannerStore {
     this.insertSavedRecipeStmt = this.db.prepare(
       `INSERT INTO saved_recipes
         (id, created_at_ms, meal_id, source_plan_id, name, description,
-         servings, ingredients_json, prep_time_min, cook_time_min, recipe_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         servings, ingredients_json, prep_time_min, cook_time_min, recipe_json, tags_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     this.selectSavedRecipeByIdStmt = this.db.prepare("SELECT * FROM saved_recipes WHERE id = ? LIMIT 1");
     this.selectSavedRecipeByMealIdStmt = this.db.prepare("SELECT * FROM saved_recipes WHERE meal_id = ? LIMIT 1");
     this.selectSavedRecipesStmt    = this.db.prepare("SELECT * FROM saved_recipes ORDER BY created_at_ms DESC LIMIT ?");
+    this.selectUntaggedRecipesStmt = this.db.prepare(
+      "SELECT * FROM saved_recipes WHERE tags_json IS NULL OR tags_json = '[]' OR tags_json = '' ORDER BY created_at_ms ASC LIMIT ?"
+    );
     this.deleteSavedRecipeByMealIdStmt = this.db.prepare("DELETE FROM saved_recipes WHERE meal_id = ?");
     this.updateSavedRecipeNotesStmt = this.db.prepare(
       "UPDATE saved_recipes SET notes = ?, notes_updated_at_ms = ? WHERE id = ?"
+    );
+    this.updateSavedRecipeTagsStmt = this.db.prepare(
+      "UPDATE saved_recipes SET tags_json = ? WHERE id = ?"
     );
   }
 
@@ -358,7 +366,7 @@ export class MealPlannerStore {
 
   // ---------------- Saved recipes ----------------
 
-  saveRecipe({ meal_id, source_plan_id, meal }) {
+  saveRecipe({ meal_id, source_plan_id, meal, tags }) {
     const existing = this.getSavedRecipeByMealId(meal_id);
     if (existing) return existing;
     const id = randomUUID();
@@ -374,6 +382,7 @@ export class MealPlannerStore {
       meal.prep_time_min == null ? null : Number(meal.prep_time_min),
       meal.cook_time_min == null ? null : Number(meal.cook_time_min),
       encodeJson(meal, {}),
+      encodeJson(Array.isArray(tags) ? tags : [], []),
     );
     return this.getSavedRecipe(id);
   }
@@ -404,6 +413,21 @@ export class MealPlannerStore {
     const text = notes == null ? null : String(notes).trim();
     this.updateSavedRecipeNotesStmt.run(text || null, Date.now(), String(id));
     return this.getSavedRecipe(id);
+  }
+
+  setRecipeTags(id, tags) {
+    const recipe = this.getSavedRecipe(id);
+    if (!recipe) return null;
+    this.updateSavedRecipeTagsStmt.run(
+      encodeJson(Array.isArray(tags) ? tags : [], []),
+      String(id),
+    );
+    return this.getSavedRecipe(id);
+  }
+
+  listUntaggedSavedRecipes(limit = 200) {
+    const capped = Math.max(1, Math.min(500, Number(limit) || 200));
+    return this.selectUntaggedRecipesStmt.all(capped).map(mapSavedRecipeRow).filter(Boolean);
   }
 
   isRecipeSaved(mealId) {

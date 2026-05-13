@@ -691,12 +691,82 @@ function stepperEl({ value, min = 1, max = 14, onChange }) {
 
 // --------- Recipes ----------
 
+// Tracks whether we've already kicked off the legacy-recipe backfill this
+// session so navigating back to /#/recipes doesn't re-fire it.
+let backfillKicked = false;
+
+const TAG_DIMENSION_ORDER = ["cuisine", "protein", "method"];
+const TAG_DIMENSION_LABELS = {
+  cuisine: "Cuisine",
+  protein: "Protein",
+  method: "Method",
+};
+
+function parseTag(tag) {
+  const idx = String(tag || "").indexOf(":");
+  if (idx < 0) return { dim: "", value: String(tag || "") };
+  return { dim: tag.slice(0, idx), value: tag.slice(idx + 1) };
+}
+
+function visibleTags(tags) {
+  return (tags || []).filter((t) => TAG_DIMENSION_ORDER.includes(parseTag(t).dim));
+}
+
+function tagChipEl(label, { active = false, onClick, title } = {}) {
+  const props = {
+    class: `chip chip--tag${active ? " chip--active" : ""}`,
+    type: "button",
+  };
+  if (title) props.title = title;
+  if (onClick) props.onClick = (e) => { e.preventDefault(); e.stopPropagation(); onClick(e); };
+  return el("button", props, label);
+}
+
 async function viewRecipes() {
-  const { recipes } = await api("/recipes?limit=100");
+  const [{ recipes }, { taxonomy }] = await Promise.all([
+    api("/recipes?limit=100"),
+    api("/taxonomy"),
+  ]);
   clear(view);
+
+  // Active filter: one value per dimension. Clicking the active chip clears it.
+  const active = new Map();
+
+  // Only show dimensions that have at least one tag present in the loaded set.
+  // Avoid building a 50-chip filter wall when most recipes are untagged.
+  const presentByDim = {};
+  for (const dim of TAG_DIMENSION_ORDER) presentByDim[dim] = new Set();
+  let untaggedCount = 0;
+  for (const r of recipes) {
+    if (visibleTags(r.tags).length === 0) untaggedCount += 1;
+    for (const t of r.tags || []) {
+      const { dim, value } = parseTag(t);
+      if (presentByDim[dim]) presentByDim[dim].add(value);
+    }
+  }
+  const hasAnyFilterDim = TAG_DIMENSION_ORDER.some((dim) => presentByDim[dim].size > 0);
+
+  // Header: title block on the left, filter toggle button on the right.
+  const subEl = el("p", { class: "page-sub" },
+    recipes.length ? `${recipes.length} saved` : "No saved recipes yet.");
+  const filterToggle = el("button", {
+    class: "filter-toggle",
+    type: "button",
+    "aria-expanded": "false",
+    "aria-controls": "recipe-filter-panel",
+  });
+  const filterToggleCount = el("span", { class: "filter-toggle__count", hidden: true });
+  filterToggle.append(el("span", {}, "Filter"), filterToggleCount);
+  if (!hasAnyFilterDim) filterToggle.hidden = true;
+
   view.append(
-    el("h1", { class: "page-title" }, "Recipes"),
-    el("p",  { class: "page-sub" }, recipes.length ? `${recipes.length} saved` : "No saved recipes yet."),
+    el("div", { class: "page-head" },
+      el("div", { class: "page-head__title" },
+        el("h1", { class: "page-title" }, "Recipes"),
+        subEl,
+      ),
+      filterToggle,
+    ),
   );
 
   if (!recipes.length) {
@@ -704,24 +774,135 @@ async function viewRecipes() {
     return;
   }
 
-  const list = el("ol", { class: "editorial-list" });
-  for (const r of recipes) {
-    list.append(
-      el("a", { class: "editorial-row", href: `#/recipes/${r.id}` },
-        el("div", { class: "editorial-row__eyebrow" },
-          el("span", { class: "eyebrow" }, fmtDate(r.created_at_ms).toUpperCase()),
-          el("span", { class: "editorial-row__star" }, "★"),
-        ),
-        el("h2", { class: "editorial-row__headline" }, r.name),
-        r.description ? el("p", { class: "editorial-row__summary" }, r.description) : null,
-        el("div", { class: "editorial-row__meta" },
-          recipeMeta(r),
-          r.notes ? el("span", { class: "recipe-row__notes", title: "Has notes" }, " · ✎ noted") : null,
-        ),
-      ),
-    );
+  const filterPanel = el("div", { class: "recipe-filters", id: "recipe-filter-panel", hidden: true });
+
+  function matchesFilter(r) {
+    if (!active.size) return true;
+    const tagSet = new Set(r.tags || []);
+    for (const [dim, val] of active.entries()) {
+      if (!tagSet.has(`${dim}:${val}`)) return false;
+    }
+    return true;
   }
-  view.append(list);
+
+  function renderFilterPanel() {
+    clear(filterPanel);
+    for (const dim of TAG_DIMENSION_ORDER) {
+      const present = presentByDim[dim];
+      if (!present.size) continue;
+      // Preserve taxonomy order so "quick → weeknight → weekend" reads right.
+      const ordered = (taxonomy?.[dim] || [...present]).filter((v) => present.has(v));
+      const group = el("div", { class: "chip-group" },
+        el("div", { class: "chip-group__label" }, TAG_DIMENSION_LABELS[dim] || dim),
+      );
+      for (const value of ordered) {
+        const isActive = active.get(dim) === value;
+        group.append(tagChipEl(value, {
+          active: isActive,
+          onClick: () => {
+            if (active.get(dim) === value) active.delete(dim);
+            else active.set(dim, value);
+            renderFilterPanel();
+            updateFilterToggle();
+            renderList();
+          },
+        }));
+      }
+      filterPanel.append(group);
+    }
+    if (active.size) {
+      const clearBtn = el("button", {
+        class: "btn btn--text recipe-filters__clear",
+        type: "button",
+      }, "Clear filters");
+      clearBtn.addEventListener("click", () => {
+        active.clear();
+        renderFilterPanel();
+        updateFilterToggle();
+        renderList();
+      });
+      filterPanel.append(clearBtn);
+    }
+  }
+
+  function updateFilterToggle() {
+    if (active.size) {
+      filterToggleCount.hidden = false;
+      filterToggleCount.textContent = String(active.size);
+      filterToggle.classList.add("filter-toggle--has-active");
+    } else {
+      filterToggleCount.hidden = true;
+      filterToggleCount.textContent = "";
+      filterToggle.classList.remove("filter-toggle--has-active");
+    }
+  }
+
+  filterToggle.addEventListener("click", () => {
+    const open = filterPanel.hidden;
+    filterPanel.hidden = !open;
+    filterToggle.setAttribute("aria-expanded", String(open));
+    filterToggle.classList.toggle("filter-toggle--open", open);
+  });
+
+  const listWrap = el("ol", { class: "editorial-list" });
+  function renderList() {
+    clear(listWrap);
+    const filtered = recipes.filter(matchesFilter);
+    subEl.textContent = active.size
+      ? `Showing ${filtered.length} of ${recipes.length}`
+      : `${recipes.length} saved`;
+    for (const r of filtered) {
+      const shownTags = visibleTags(r.tags);
+      const tagsRow = shownTags.length
+        ? el("div", { class: "editorial-row__tags" },
+            ...shownTags.map((t) => {
+              const { value } = parseTag(t);
+              return tagChipEl(value);
+            }),
+          )
+        : null;
+      listWrap.append(
+        el("a", { class: "editorial-row", href: `#/recipes/${r.id}` },
+          el("div", { class: "editorial-row__eyebrow" },
+            el("span", { class: "eyebrow" }, fmtDate(r.created_at_ms).toUpperCase()),
+            el("span", { class: "editorial-row__star" }, "★"),
+          ),
+          el("h2", { class: "editorial-row__headline" }, r.name),
+          r.description ? el("p", { class: "editorial-row__summary" }, r.description) : null,
+          el("div", { class: "editorial-row__meta" },
+            recipeMeta(r),
+            r.notes ? el("span", { class: "recipe-row__notes", title: "Has notes" }, " · ✎ noted") : null,
+          ),
+          tagsRow,
+        ),
+      );
+    }
+    if (!filtered.length) {
+      listWrap.append(el("li", { class: "editorial-row__meta", style: "padding:24px 0;" },
+        "No recipes match these filters."));
+    }
+  }
+
+  // Auto-backfill: when legacy recipes are missing tags, fire the bulk
+  // tagger once per session in the background. No button, just toasts.
+  if (untaggedCount > 0 && !backfillKicked) {
+    backfillKicked = true;
+    toast(`Tagging ${untaggedCount} recipe${untaggedCount === 1 ? "" : "s"}…`, 3200);
+    api("/recipes/retag-untagged", { method: "POST" })
+      .then((res) => {
+        if (res?.updated) toast(`Tagged ${res.updated} recipe${res.updated === 1 ? "" : "s"}`);
+        if (window.location.hash.startsWith("#/recipes")) route();
+      })
+      .catch((err) => {
+        backfillKicked = false; // allow retry next time they visit
+        toast(`Auto-tag failed: ${err.message}`);
+      });
+  }
+
+  view.append(filterPanel, listWrap);
+  renderFilterPanel();
+  updateFilterToggle();
+  renderList();
 }
 
 function recipeMeta(r) {
@@ -749,6 +930,35 @@ async function viewRecipeDetail(id) {
   meal.saved = true;
 
   clear(view);
+  const tagsRow = el("div", { class: "recipe-detail__tags" });
+  function renderTags(tags) {
+    clear(tagsRow);
+    const shown = visibleTags(tags);
+    for (const t of shown) {
+      const { value } = parseTag(t);
+      tagsRow.append(tagChipEl(value));
+    }
+    const retag = el("button", {
+      class: "btn btn--text recipe-detail__retag",
+      type: "button",
+    }, shown.length ? "Re-tag" : "Auto-tag");
+    retag.addEventListener("click", async () => {
+      retag.disabled = true;
+      retag.textContent = "Tagging…";
+      try {
+        const res = await api(`/recipes/${id}/retag`, { method: "POST" });
+        renderTags(res.recipe?.tags || []);
+        toast("Tags refreshed");
+      } catch (err) {
+        toast(`Retag failed: ${err.message}`);
+        retag.disabled = false;
+        retag.textContent = "Re-tag";
+      }
+    });
+    tagsRow.append(retag);
+  }
+  renderTags(recipe.tags || []);
+
   view.append(
     el("a", { class: "back-link", href: "#/recipes" }, "Recipes"),
     el("div", { class: "plan-hero" },
@@ -756,6 +966,7 @@ async function viewRecipeDetail(id) {
       el("h1",  { class: "page-title" }, meal.name || "Untitled"),
       meal.description ? el("p", { class: "italic-lede" }, meal.description) : null,
     ),
+    tagsRow,
     mealBlock(meal, 1, recipe.source_plan_id || ""),
   );
 
