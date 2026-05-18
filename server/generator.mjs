@@ -198,8 +198,14 @@ Use this exact structure:
     );
   }
 
-  if (lastPlan?.feedback_text) {
-    userParts.push("", `Feedback on last plan: "${lastPlan.feedback_text}"`);
+  const feedbackItems = collectFeedbackItems({ store, plan: lastPlan });
+  if (feedbackItems.length) {
+    userParts.push("", "Feedback from last week (use this to inform this week's plan):");
+    for (const item of feedbackItems) {
+      const tag = item.kind === "revision" ? " (replaced last time)" : "";
+      const desc = item.meal.description ? ` — ${item.meal.description}` : "";
+      userParts.push(`- ${item.meal.name}${desc}${tag}: "${item.feedback}"`);
+    }
   }
 
   const userPrompt = userParts.join("\n");
@@ -232,10 +238,11 @@ Use this exact structure:
   };
 }
 
-// Regenerate a single meal inside an existing plan. The new meal must be
-// different from the meal it's replacing AND different from the other meals
-// in the plan. Preferences and seasonal context still apply.
-export async function regenerateMeal({ store, plan, replaceMealId, steerNote }) {
+// Regenerate a single meal inside an existing plan. Two modes:
+//   - "swap": new meal must differ in cuisine/protein/style (the ↻ button)
+//   - "tune": keep the dish recognizable, apply the user's notes to refine it
+// Preferences and seasonal context still apply in both modes.
+export async function regenerateMeal({ store, plan, replaceMealId, steerNote, mode = "swap" }) {
   const meals = Array.isArray(plan.meals) ? plan.meals : [];
   const target = meals.find((m) => m.id === replaceMealId);
   if (!target) throw new Error(`meal ${replaceMealId} not found in plan ${plan.id}`);
@@ -244,18 +251,32 @@ export async function regenerateMeal({ store, plan, replaceMealId, steerNote }) 
   const preferences = store.listPreferences();
 
   const editablePrompt = store.getConfig("system_prompt") || "";
-  const system = `${editablePrompt}
-
-You are replacing ONE dinner in an existing weekly plan. Generate exactly one new dinner that:
+  const constraint = mode === "tune"
+    ? `You are TUNING one dinner in an existing weekly plan based on user feedback. Generate a refined version of the SAME dish that:
+- Keeps the core dish recognizable: same protein, same cuisine, same overall concept
+- Applies the user's feedback to adjust flavor, technique, ingredients, or timing
+- Does NOT duplicate or closely resemble the other meals in the plan
+- Still follows all the guidelines above`
+    : `You are replacing ONE dinner in an existing weekly plan. Generate exactly one new dinner that:
 - Is different in cuisine, protein, and cooking style from the meal being replaced
 - Does NOT duplicate or closely resemble the other meals in the plan
-- Still follows all the guidelines above
+- Still follows all the guidelines above`;
+
+  const system = `${editablePrompt}
+
+${constraint}
 
 Respond in JSON only — a single meal object. No markdown, no explanation.
 Use this exact structure:
 {"name": "...", "description": "...", "servings": 3, "ingredients": ["1 lb chicken breast", "2 tbsp soy sauce", "..."], "instructions": ["Step 1...", "Step 2..."], "prep_time_min": 0, "cook_time_min": 0}`;
 
-  const userParts = [`Replace this meal in the plan: "${target.name}"${target.description ? ` — ${target.description}` : ""}.`];
+  const verb = mode === "tune" ? "Tune" : "Replace";
+  const userParts = [`${verb} this meal in the plan: "${target.name}"${target.description ? ` — ${target.description}` : ""}.`];
+
+  if (mode === "tune" && Array.isArray(target.ingredients) && target.ingredients.length) {
+    userParts.push("", "Current ingredients (adjust where the feedback calls for it; keep the dish recognizable):");
+    for (const ing of target.ingredients) userParts.push(`- ${ing}`);
+  }
 
   if (others.length) {
     userParts.push("", "The other meals in the plan (do NOT match these in cuisine, protein, or style):");
@@ -281,7 +302,10 @@ Use this exact structure:
   if (seasonal) userParts.push("", seasonal);
 
   if (steerNote && steerNote.trim()) {
-    userParts.push("", `User guidance for the replacement (follow this closely): ${steerNote.trim()}`);
+    const label = mode === "tune"
+      ? "User feedback to apply (this is the reason for the tune — follow it closely):"
+      : "User guidance for the replacement (follow this closely):";
+    userParts.push("", `${label} ${steerNote.trim()}`);
   }
 
   userParts.push(
@@ -310,20 +334,51 @@ Use this exact structure:
   return mealObj;
 }
 
-export async function extractPreferencesFromFeedback({ feedbackText }) {
-  if (!feedbackText || !feedbackText.trim()) return [];
-  const system = `You extract food preferences from meal feedback. Given free-text feedback about meals, extract structured preferences.
+// Gather per-meal feedback from a plan, including notes attached directly to
+// meals (Mode A) and steer notes that triggered regens (Mode B, via the
+// meal_revisions table). Each item carries the meal context so the extractor
+// can interpret "too sweet" against the dish it was about.
+export function collectFeedbackItems({ store, plan }) {
+  if (!plan?.id) return [];
+  const items = [];
+  for (const meal of plan.meals || []) {
+    if (meal?.feedback && String(meal.feedback).trim()) {
+      items.push({ kind: "meal", meal, feedback: String(meal.feedback).trim() });
+    }
+  }
+  const revisions = store.listMealRevisionsForPlan(plan.id) || [];
+  for (const rev of revisions) {
+    if (rev.feedback_text && rev.feedback_text.trim()) {
+      items.push({ kind: "revision", meal: rev.meal || {}, feedback: rev.feedback_text.trim() });
+    }
+  }
+  return items;
+}
+
+// Pull structured, reusable preferences from per-meal feedback. Each item is
+// { meal, feedback, kind }: pure notes on a meal, or a steer note that drove a
+// regen. Meal context lets the LLM ground "too sweet" in the actual dish.
+export async function extractPreferencesFromFeedbackItems({ items }) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const system = `You extract durable household food preferences from meal feedback. Each input line is one meal we made (or planned) along with the household's note about it.
 
 Return a JSON array of objects with:
 - "kind": one of "like", "dislike", "allergy", "staple", "note"
-- "value": short description of the preference
+- "value": a short, reusable preference (e.g. "less sweet glazes on fish", "loves Korean rice bowls", "no liver")
 
-Only extract clear, reusable preferences. Skip vague comments.
+Only extract preferences that are clear and reusable across future weeks. Skip vague comments and one-off complaints. Tie each preference to the underlying pattern, not the single dish — "salmon teriyaki too sweet" is better captured as "dislike: heavy sweet glazes on fish" than "dislike: salmon teriyaki".
+
 Respond with JSON array only. No explanation.`;
-  const user = `Feedback: "${feedbackText}"`;
+
+  const lines = items.map((it, i) => {
+    const tag = it.kind === "revision" ? " (replaced via regen)" : "";
+    const desc = it.meal?.description ? ` — ${it.meal.description}` : "";
+    return `${i + 1}. ${it.meal?.name || "Unknown meal"}${desc}${tag}: "${it.feedback}"`;
+  });
+  const user = `Meals and household feedback:\n${lines.join("\n")}`;
 
   try {
-    const raw = await complete({ system, user, temperature: 0.3, maxTokens: 500 });
+    const raw = await complete({ system, user, temperature: 0.3, maxTokens: 600 });
     const parsed = extractJson(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((p) => p && p.kind && p.value);

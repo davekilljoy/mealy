@@ -22,7 +22,7 @@ export function createRoutes({ store, scheduler }) {
   api.get("/plans/:id", (c) => {
     const plan = store.getPlan(c.req.param("id"));
     if (!plan) return c.json({ error: "not_found" }, 404);
-    return c.json({ plan: withSavedFlags(plan, store) });
+    return c.json({ plan: augmentMeals(plan, store) });
   });
 
   api.post("/plans/:id/read", (c) => {
@@ -31,12 +31,16 @@ export function createRoutes({ store, scheduler }) {
     return c.json({ ok: true, unread_count: store.getUnreadCount() });
   });
 
-  api.patch("/plans/:id/feedback", async (c) => {
+  api.patch("/plans/:planId/meals/:mealId/feedback", async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const text = body?.feedback_text == null ? "" : String(body.feedback_text);
-    const plan = store.setPlanFeedback(c.req.param("id"), text);
+    const text = body?.feedback == null ? "" : String(body.feedback);
+    const plan = store.setMealFeedback(
+      c.req.param("planId"),
+      c.req.param("mealId"),
+      text,
+    );
     if (!plan) return c.json({ error: "not_found" }, 404);
-    return c.json({ plan });
+    return c.json({ plan: augmentMeals(plan, store) });
   });
 
   api.delete("/plans/:id", (c) => {
@@ -57,11 +61,27 @@ export function createRoutes({ store, scheduler }) {
 
     const body = await c.req.json().catch(() => ({}));
     const steerNote = body?.steer_note ? String(body.steer_note) : "";
+    const mode = body?.mode === "tune" ? "tune" : "swap";
 
     try {
-      const newMeal = await regenerateMeal({ store, plan, replaceMealId: mealId, steerNote });
+      const oldMeal = plan.meals[idx];
+      const newMeal = await regenerateMeal({ store, plan, replaceMealId: mealId, steerNote, mode });
       const meals = [...plan.meals];
       meals[idx] = { ...newMeal };
+
+      // Snapshot the meal we're replacing so we can show history and feed
+      // the preference extractor. Prefer the explicit steer note as the
+      // "why" — fall back to any feedback already saved on the meal.
+      const revisionReason = (steerNote && steerNote.trim())
+        ? steerNote.trim()
+        : (oldMeal?.feedback || null);
+      store.addMealRevision({
+        plan_id: plan.id,
+        slot_index: idx,
+        replaced_meal_id: mealId,
+        meal: oldMeal,
+        feedback_text: revisionReason,
+      });
 
       // Rebuild grocery list and content from the new meal set
       const grocery = consolidateGrocery(meals);
@@ -74,7 +94,7 @@ export function createRoutes({ store, scheduler }) {
         summary,
         content: md,
       });
-      return c.json({ plan: withSavedFlags(updated, store), meal: newMeal });
+      return c.json({ plan: augmentMeals(updated, store), meal: newMeal });
     } catch (err) {
       return c.json({ error: String(err?.message || err) }, 500);
     }
@@ -237,11 +257,21 @@ function summariseForList(plan) {
   };
 }
 
-function withSavedFlags(plan, store) {
+function augmentMeals(plan, store) {
   if (!plan?.meals) return plan;
+  const revisions = store.listMealRevisionsForPlan(plan.id);
+  const bySlot = {};
+  for (const r of revisions) {
+    if (!bySlot[r.slot_index]) bySlot[r.slot_index] = [];
+    bySlot[r.slot_index].push(r);
+  }
   return {
     ...plan,
-    meals: plan.meals.map((m) => ({ ...m, saved: m.id ? store.isRecipeSaved(m.id) : false })),
+    meals: plan.meals.map((m, idx) => ({
+      ...m,
+      saved: m.id ? store.isRecipeSaved(m.id) : false,
+      revisions: bySlot[idx] || [],
+    })),
   };
 }
 

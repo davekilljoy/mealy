@@ -403,6 +403,166 @@ button {
 .meal__redo.spin { animation: spin 1.4s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* per-meal feedback panel */
+.meal__feedback-toggle {
+  background: none;
+  border: 0;
+  padding: 6px 0;
+  margin: 12px 0 0;
+  font-family: inherit;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: color 160ms var(--easing);
+}
+.meal__feedback-toggle:hover { color: var(--accent); }
+.meal__feedback-toggle--has-note { color: var(--accent); }
+
+.meal__feedback-panel {
+  margin: 8px 0 4px;
+  padding: 14px 16px 12px;
+  background: var(--paper-2);
+  border-left: 2px solid var(--rule);
+  border-radius: 2px;
+}
+.meal__feedback-input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.95rem;
+  resize: vertical;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 8px 10px;
+  color: var(--ink);
+}
+.meal__feedback-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.meal__feedback-actions .btn { min-height: 36px; padding: 0 14px; }
+
+.meal__tuned-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: oklch(from var(--accent) l c h / 0.35);
+  transition: text-decoration-color 160ms var(--easing);
+}
+.meal__tuned-link:hover {
+  text-decoration-color: var(--accent);
+}
+
+/* version history modal */
+dialog.history {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  max-width: 640px;
+  width: calc(100% - 32px);
+}
+dialog.history::backdrop {
+  background: oklch(22% 0.02 78 / 0.45);
+  backdrop-filter: blur(2px);
+}
+dialog.history .history__inner {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 28px 28px 20px;
+  box-shadow: 0 16px 48px oklch(22% 0.02 78 / 0.22);
+  max-height: 80vh;
+  overflow-y: auto;
+}
+dialog.history h2 {
+  font-family: var(--display);
+  font-variation-settings: "opsz" 144;
+  font-weight: 380;
+  font-size: 1.5rem;
+  line-height: 1.2;
+  margin: 0 0 8px;
+  color: var(--ink);
+}
+dialog.history .history__sub {
+  margin: 0 0 20px;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+dialog.history .history__list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 20px;
+}
+dialog.history .history__item {
+  padding: 16px 0;
+  border-top: 1px solid var(--rule-soft);
+}
+dialog.history .history__item:first-child { border-top: 0; padding-top: 0; }
+dialog.history .history__when {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 4px;
+}
+dialog.history .history__name {
+  font-family: var(--display);
+  font-variation-settings: "opsz" 144;
+  font-weight: 380;
+  font-size: 1.15rem;
+  line-height: 1.2;
+  color: var(--ink);
+}
+dialog.history .history__desc {
+  color: var(--ink-2);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+dialog.history .history__times {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  margin-top: 10px;
+}
+dialog.history .history__item .meal__subhead {
+  margin-top: 16px;
+  margin-bottom: 8px;
+}
+dialog.history .history__item .ingredients,
+dialog.history .history__item .method {
+  margin-bottom: 16px;
+}
+dialog.history .history__note {
+  color: var(--ink-2);
+  font-style: italic;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin-top: 8px;
+  padding-left: 12px;
+  border-left: 2px solid var(--rule);
+}
+dialog.history .history__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+dialog.history .history__actions .btn { min-height: 40px; padding: 0 18px; }
+
 .danger-zone {
   margin-top: 56px;
   padding-top: 32px;

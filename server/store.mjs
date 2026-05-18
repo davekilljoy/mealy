@@ -57,6 +57,19 @@ function mapPreferenceRow(row) {
   };
 }
 
+function mapMealRevisionRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id || ""),
+    plan_id: String(row.plan_id || ""),
+    slot_index: Number(row.slot_index || 0),
+    replaced_meal_id: String(row.replaced_meal_id || ""),
+    meal: safeJsonParse(row.meal_json, {}),
+    feedback_text: row.feedback_text == null ? null : String(row.feedback_text),
+    replaced_at_ms: Number(row.replaced_at_ms || 0),
+  };
+}
+
 function mapSavedRecipeRow(row) {
   if (!row) return null;
   return {
@@ -160,6 +173,19 @@ export class MealPlannerStore {
         updated_at_ms INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS meal_revisions (
+        id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL,
+        slot_index INTEGER NOT NULL,
+        replaced_meal_id TEXT NOT NULL,
+        meal_json TEXT NOT NULL,
+        feedback_text TEXT,
+        replaced_at_ms INTEGER NOT NULL,
+        FOREIGN KEY (plan_id) REFERENCES meal_plans(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_meal_revisions_plan
+        ON meal_revisions(plan_id, slot_index, replaced_at_ms);
+
       CREATE TABLE IF NOT EXISTS saved_recipes (
         id TEXT PRIMARY KEY,
         created_at_ms INTEGER NOT NULL,
@@ -215,6 +241,18 @@ export class MealPlannerStore {
     this.countUnreadStmt      = this.db.prepare("SELECT COUNT(*) AS c FROM meal_plans WHERE read_at_ms IS NULL");
     this.deletePlanStmt       = this.db.prepare("DELETE FROM meal_plans WHERE id = ?");
     this.updatePlanMealsStmt  = this.db.prepare("UPDATE meal_plans SET meals_json = ?, grocery_list_json = ?, summary = ?, content = ? WHERE id = ?");
+
+    this.insertMealRevisionStmt = this.db.prepare(
+      `INSERT INTO meal_revisions
+        (id, plan_id, slot_index, replaced_meal_id, meal_json, feedback_text, replaced_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    this.selectMealRevisionsForPlanStmt = this.db.prepare(
+      "SELECT * FROM meal_revisions WHERE plan_id = ? ORDER BY slot_index ASC, replaced_at_ms ASC"
+    );
+    this.selectMealRevisionsForSlotStmt = this.db.prepare(
+      "SELECT * FROM meal_revisions WHERE plan_id = ? AND slot_index = ? ORDER BY replaced_at_ms ASC"
+    );
 
     this.insertPreferenceStmt = this.db.prepare(
       `INSERT INTO meal_preferences (id, created_at_ms, kind, value, active) VALUES (?, ?, ?, ?, 1)`
@@ -326,6 +364,65 @@ export class MealPlannerStore {
       String(id),
     );
     return this.getPlan(id);
+  }
+
+  // Update a single meal's fields in-place inside meals_json. Returns the
+  // updated plan, or null if the plan/meal isn't found.
+  updateMeal(planId, mealId, patch) {
+    const plan = this.getPlan(planId);
+    if (!plan) return null;
+    const meals = Array.isArray(plan.meals) ? [...plan.meals] : [];
+    const idx = meals.findIndex((m) => m && m.id === mealId);
+    if (idx < 0) return null;
+    meals[idx] = { ...meals[idx], ...patch };
+    this.updatePlanMealsStmt.run(
+      encodeJson(meals, []),
+      encodeJson(plan.grocery_list, []),
+      plan.summary == null ? null : String(plan.summary),
+      plan.content == null ? null : String(plan.content),
+      String(planId),
+    );
+    return this.getPlan(planId);
+  }
+
+  setMealFeedback(planId, mealId, feedbackText) {
+    const text = feedbackText == null ? null : String(feedbackText).trim();
+    return this.updateMeal(planId, mealId, {
+      feedback: text || null,
+      feedback_at_ms: text ? Date.now() : null,
+    });
+  }
+
+  // ---------------- Meal revisions ----------------
+
+  addMealRevision({ plan_id, slot_index, replaced_meal_id, meal, feedback_text }) {
+    const id = randomUUID();
+    const now = Date.now();
+    this.insertMealRevisionStmt.run(
+      id,
+      String(plan_id),
+      Number(slot_index),
+      String(replaced_meal_id),
+      encodeJson(meal, {}),
+      feedback_text == null ? null : String(feedback_text).trim() || null,
+      now,
+    );
+    return mapMealRevisionRow({
+      id, plan_id, slot_index, replaced_meal_id,
+      meal_json: encodeJson(meal, {}),
+      feedback_text,
+      replaced_at_ms: now,
+    });
+  }
+
+  listMealRevisionsForPlan(planId) {
+    return this.selectMealRevisionsForPlanStmt.all(String(planId))
+      .map(mapMealRevisionRow).filter(Boolean);
+  }
+
+  listMealRevisionsForSlot(planId, slotIndex) {
+    return this.selectMealRevisionsForSlotStmt.all(String(planId), Number(slotIndex))
+      .map(mapMealRevisionRow).filter(Boolean);
   }
 
   // ---------------- Preferences ----------------

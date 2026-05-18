@@ -11,7 +11,12 @@
 //   - Exposes generation state (running, last_run_ms, last_status, next_run_ms)
 //     so the UI can show "Generating…" while a run is in flight
 
-import { extractPreferencesFromFeedback, formatMealPlanMarkdown, generateMealPlan } from "./generator.mjs";
+import {
+  collectFeedbackItems,
+  extractPreferencesFromFeedbackItems,
+  formatMealPlanMarkdown,
+  generateMealPlan,
+} from "./generator.mjs";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const TICK_MS = 60_000;
@@ -56,21 +61,26 @@ export function createScheduler({ store }) {
     state.next_run_ms = state.next_fire_at_ms;
   }
 
+  // Pull preferences out of the previous plan's per-meal feedback + regen
+  // history. Shared by every generation path (scheduled and manual) so manual
+  // runs no longer skip the learning step.
+  async function autoExtractPrefs() {
+    const previousPlan = store.getLatestPlan();
+    const items = collectFeedbackItems({ store, plan: previousPlan });
+    if (!items.length) return;
+    const extracted = await extractPreferencesFromFeedbackItems({ items });
+    for (const pref of extracted) {
+      store.addPreference({ kind: pref.kind, value: pref.value });
+      console.log(`[scheduler] auto-pref: ${pref.kind} — ${pref.value}`);
+    }
+  }
+
   async function runOnce() {
     if (state.running) return { skipped: true, reason: "already-running" };
     state.running = true;
     state.last_error = null;
     try {
-      // Auto-extract preferences from the previous plan's feedback
-      const previousPlan = store.getLatestPlan();
-      if (previousPlan?.feedback_text) {
-        const extracted = await extractPreferencesFromFeedback({ feedbackText: previousPlan.feedback_text });
-        for (const pref of extracted) {
-          store.addPreference({ kind: pref.kind, value: pref.value });
-          console.log(`[scheduler] auto-pref: ${pref.kind} — ${pref.value}`);
-        }
-      }
-
+      await autoExtractPrefs();
       const plan = await generateMealPlan({ store });
       const weekOf = new Date().toISOString().slice(0, 10);
       const md = formatMealPlanMarkdown(plan);
@@ -144,6 +154,7 @@ export function createScheduler({ store }) {
       state.last_error = null;
       return (async () => {
         try {
+          await autoExtractPrefs();
           const plan = await generateMealPlan({ store, ...opts });
           const weekOf = new Date().toISOString().slice(0, 10);
           const md = formatMealPlanMarkdown(plan);

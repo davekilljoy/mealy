@@ -91,6 +91,46 @@ function warn({ title, body, confirmLabel = "Confirm", cancelLabel = "Cancel", d
   });
 }
 
+function openHistoryModal(meal) {
+  const revisions = Array.isArray(meal?.revisions) ? meal.revisions : [];
+  const dlg = el("dialog", { class: "history" });
+  const close = el("button", { class: "btn btn--ghost", type: "button" }, "Close");
+  close.addEventListener("click", () => dlg.close());
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); dlg.close(); });
+  dlg.addEventListener("close", () => setTimeout(() => dlg.remove(), 0));
+
+  const list = el("ol", { class: "history__list" });
+  // Most recent revision first; the array from the API is oldest-first.
+  for (const rev of [...revisions].reverse()) {
+    const m = rev.meal || {};
+    const times = [];
+    if (m.prep_time_min) times.push(`Prep ${m.prep_time_min} min`);
+    if (m.cook_time_min) times.push(`Cook ${m.cook_time_min} min`);
+    if (m.servings)      times.push(`Serves ${m.servings}`);
+
+    const item = el("li", { class: "history__item" },
+      el("div", { class: "history__when" }, `Replaced ${relTime(rev.replaced_at_ms)}`),
+      el("div", { class: "history__name" }, m.name || "Untitled"),
+      m.description ? el("div", { class: "history__desc" }, m.description) : null,
+      times.length ? el("div", { class: "history__times" }, times.join(" · ")) : null,
+    );
+    appendRecipeBody(item, m);
+    if (rev.feedback_text) {
+      item.append(el("div", { class: "history__note" }, `“${rev.feedback_text}”`));
+    }
+    list.append(item);
+  }
+
+  dlg.append(el("div", { class: "history__inner" },
+    el("h2", {}, "Version history"),
+    el("p", { class: "history__sub" }, `${revisions.length} prior version${revisions.length === 1 ? "" : "s"} of “${meal?.name || "this meal"}”.`),
+    list,
+    el("div", { class: "history__actions" }, close),
+  ));
+  document.body.append(dlg);
+  dlg.showModal();
+}
+
 function toast(msg, ms = 2200) {
   toastEl.textContent = msg;
   toastEl.hidden = false;
@@ -251,13 +291,12 @@ async function viewPlanDetail(id) {
     ),
   );
 
-  async function handleRegen(oldMeal, oldNode, steerNote) {
+  async function handleRegen(oldMeal, oldNode, steerNote, { mode = "swap" } = {}) {
     const res = await api(`/plans/${plan.id}/meals/${encodeURIComponent(oldMeal.id)}/regen`, {
       method: "POST",
-      body: JSON.stringify({ steer_note: steerNote || "" }),
+      body: JSON.stringify({ steer_note: steerNote || "", mode }),
     });
     const updatedPlan = res.plan;
-    const idx = (updatedPlan.meals || []).findIndex((m) => m.id !== oldMeal.id && !document.querySelector(`[data-meal-id="${m.id}"]`));
     // Find the position of the old node and the new meal that took its place
     const oldIdx = (plan.meals || []).findIndex((m) => m.id === oldMeal.id);
     plan.meals = updatedPlan.meals;
@@ -267,7 +306,7 @@ async function viewPlanDetail(id) {
     const newNode = mealBlock(newMeal, oldIdx + 1, plan.id, { onRegen: handleRegen });
     newNode.dataset.mealId = newMeal.id;
     oldNode.replaceWith(newNode);
-    toast(`Replaced with ${newMeal.name}`);
+    toast(mode === "tune" ? `Tuned: ${newMeal.name}` : `Replaced with ${newMeal.name}`);
     // Refresh the grocery list section too
     refreshGroceryList(plan);
   }
@@ -285,38 +324,6 @@ async function viewPlanDetail(id) {
     for (const item of plan.grocery_list) ul.append(el("li", {}, item));
     view.append(ul);
   }
-
-  // Feedback
-  const ta = el("textarea", {
-    rows: 4,
-    placeholder: "How did this week go? Likes, dislikes, anything to remember…",
-  });
-  ta.value = plan.feedback_text || "";
-  const saveBtn = el("button", { class: "btn", type: "button" }, "Save feedback");
-  saveBtn.addEventListener("click", async () => {
-    saveBtn.disabled = true;
-    saveBtn.textContent = "Saving…";
-    try {
-      await api(`/plans/${id}/feedback`, {
-        method: "PATCH",
-        body: JSON.stringify({ feedback_text: ta.value }),
-      });
-      toast("Feedback saved");
-    } catch (err) {
-      toast(`Save failed: ${err.message}`);
-    } finally {
-      saveBtn.disabled = false;
-      saveBtn.textContent = "Save feedback";
-    }
-  });
-
-  view.append(
-    el("h2", { class: "section-head" }, "Feedback"),
-    el("label", { class: "field" },
-      el("span", { class: "label" }, "Notes from this week"),
-      ta),
-    saveBtn,
-  );
 
   // Danger zone — delete plan
   const delBtn = el("button", { class: "btn btn--danger", type: "button" }, "Delete plan");
@@ -441,6 +448,22 @@ function mealBlock(meal, num, planId, { onRegen } = {}) {
   if (meal.cook_time_min) times.push(`Cook ${meal.cook_time_min} min`);
   if (meal.servings)      times.push(`Serves ${meal.servings}`);
 
+  const revisionCount = Array.isArray(meal.revisions) ? meal.revisions.length : 0;
+  let metaNode = null;
+  if (times.length || revisionCount) {
+    metaNode = el("div", { class: "meal__meta" }, times.join(" · "));
+    if (revisionCount) {
+      if (times.length) metaNode.append(document.createTextNode(" · "));
+      const link = el("button", {
+        class: "meal__tuned-link",
+        type: "button",
+        title: "View prior versions",
+      }, `↶ Tuned · ${revisionCount} version${revisionCount === 1 ? "" : "s"}`);
+      link.addEventListener("click", () => openHistoryModal(meal));
+      metaNode.append(link);
+    }
+  }
+
   wrap.append(
     el("header", { class: "meal__head" },
       el("h3",  { class: "meal__name" }, meal.name || "Untitled"),
@@ -448,29 +471,121 @@ function mealBlock(meal, num, planId, { onRegen } = {}) {
       star,
     ),
     meal.description ? el("p", { class: "meal__desc" }, meal.description) : null,
-    times.length ? el("div", { class: "meal__meta" }, times.join(" · ")) : null,
+    metaNode,
   );
 
-  // Ingredients
-  if (Array.isArray(meal.ingredients) && meal.ingredients.length) {
-    wrap.append(el("div", { class: "meal__subhead" }, "Ingredients"));
+  appendRecipeBody(wrap, meal);
+
+  // Per-meal feedback panel (collapsed by default). Only attached when the
+  // meal lives inside a plan view (Recipe detail passes no planId).
+  if (planId) appendFeedbackPanel(wrap, meal, planId, { onRegen });
+
+  return wrap;
+}
+
+function appendRecipeBody(node, meal) {
+  if (Array.isArray(meal?.ingredients) && meal.ingredients.length) {
+    node.append(el("div", { class: "meal__subhead" }, "Ingredients"));
     const dl = el("dl", { class: "ingredients" });
     for (const ing of meal.ingredients) {
       const { qty, name } = splitIngredient(ing);
       dl.append(el("dt", {}, qty), el("dd", {}, name));
     }
-    wrap.append(dl);
+    node.append(dl);
   }
-
-  // Method
-  if (Array.isArray(meal.instructions) && meal.instructions.length) {
-    wrap.append(el("div", { class: "meal__subhead" }, "Method"));
+  if (Array.isArray(meal?.instructions) && meal.instructions.length) {
+    node.append(el("div", { class: "meal__subhead" }, "Method"));
     const ol = el("ol", { class: "method" });
     for (const step of meal.instructions) ol.append(el("li", {}, step));
-    wrap.append(ol);
+    node.append(ol);
+  }
+}
+
+function appendFeedbackPanel(wrap, meal, planId, { onRegen } = {}) {
+  let savedText = meal.feedback || "";
+  const hasNote = () => !!(savedText && savedText.trim());
+  const toggleLabel = () => hasNote() ? "✎ Feedback saved — edit" : "✎ Add feedback";
+
+  const toggle = el("button", {
+    class: "meal__feedback-toggle" + (hasNote() ? " meal__feedback-toggle--has-note" : ""),
+    type: "button",
+    "aria-expanded": "false",
+  }, toggleLabel());
+
+  const panel = el("div", { class: "meal__feedback-panel", hidden: true });
+
+  const ta = el("textarea", {
+    class: "meal__feedback-input",
+    rows: 3,
+    placeholder: "What worked, what didn't, what to change next time…",
+  });
+  ta.value = savedText;
+
+  const saveBtn = el("button", { class: "btn", type: "button" }, "Save");
+  const tuneBtn = onRegen
+    ? el("button", { class: "btn btn--ghost", type: "button" }, "Save & tune this meal")
+    : null;
+
+  saveBtn.addEventListener("click", async () => {
+    saveBtn.disabled = true;
+    if (tuneBtn) tuneBtn.disabled = true;
+    const prevLabel = saveBtn.textContent;
+    saveBtn.textContent = "Saving…";
+    try {
+      const res = await api(`/plans/${planId}/meals/${encodeURIComponent(meal.id)}/feedback`, {
+        method: "PATCH",
+        body: JSON.stringify({ feedback: ta.value }),
+      });
+      const updated = (res.plan?.meals || []).find((m) => m.id === meal.id);
+      savedText = updated?.feedback || "";
+      meal.feedback = savedText;
+      meal.feedback_at_ms = updated?.feedback_at_ms || null;
+      toggle.textContent = toggleLabel();
+      toggle.classList.toggle("meal__feedback-toggle--has-note", hasNote());
+      toast(hasNote() ? "Feedback saved" : "Feedback cleared");
+    } catch (err) {
+      toast(`Save failed: ${err.message}`);
+    } finally {
+      saveBtn.disabled = false;
+      if (tuneBtn) tuneBtn.disabled = false;
+      saveBtn.textContent = prevLabel;
+    }
+  });
+
+  if (tuneBtn) {
+    tuneBtn.addEventListener("click", async () => {
+      const note = ta.value.trim();
+      if (!note) { toast("Add some feedback first."); ta.focus(); return; }
+      tuneBtn.disabled = true;
+      saveBtn.disabled = true;
+      const prevLabel = tuneBtn.textContent;
+      tuneBtn.textContent = "Tuning…";
+      tuneBtn.classList.add("is-loading");
+      try {
+        await onRegen(meal, wrap, note, { mode: "tune" });
+      } catch (err) {
+        toast(`Tune failed: ${err.message}`);
+      } finally {
+        tuneBtn.disabled = false;
+        saveBtn.disabled = false;
+        tuneBtn.textContent = prevLabel;
+        tuneBtn.classList.remove("is-loading");
+      }
+    });
   }
 
-  return wrap;
+  const actions = el("div", { class: "meal__feedback-actions" }, saveBtn);
+  if (tuneBtn) actions.append(tuneBtn);
+  panel.append(ta, actions);
+
+  toggle.addEventListener("click", () => {
+    const open = panel.hidden;
+    panel.hidden = !open;
+    toggle.setAttribute("aria-expanded", String(open));
+    if (open) ta.focus();
+  });
+
+  wrap.append(toggle, panel);
 }
 
 function splitIngredient(ing) {
