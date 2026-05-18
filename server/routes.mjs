@@ -5,6 +5,7 @@ import { llmHealth } from "./llm.mjs";
 import { formatMealPlanMarkdown, regenerateMeal } from "./generator.mjs";
 import { tagRecipe } from "./tagger.mjs";
 import { RECIPE_TAG_TAXONOMY, LLM_TAG_DIMENSIONS } from "./taxonomy.mjs";
+import { getSeasonalTable, setSeasonalOverride, resetSeasonalMonth } from "./seasonal.mjs";
 
 export function createRoutes({ store, scheduler }) {
   const api = new Hono();
@@ -236,6 +237,37 @@ export function createRoutes({ store, scheduler }) {
 
   // ------ taxonomy ------
   api.get("/taxonomy", (c) => c.json({ taxonomy: RECIPE_TAG_TAXONOMY }));
+
+  // ------ seasonal table ------
+  api.get("/seasonal", (c) => c.json(getSeasonalTable(store)));
+
+  api.patch("/seasonal/:month", async (c) => {
+    const month = Number(c.req.param("month"));
+    if (!Number.isInteger(month) || month < 1 || month > 12) {
+      return c.json({ error: "month must be 1-12" }, 400);
+    }
+    const body = await c.req.json().catch(() => ({}));
+    const patch = {};
+    if (Array.isArray(body?.produce)) patch.produce = body.produce;
+    if (typeof body?.notes === "string") patch.notes = body.notes;
+    if (Object.keys(patch).length === 0) {
+      return c.json({ error: "produce or notes required" }, 400);
+    }
+    try {
+      const table = setSeasonalOverride(store, month, patch);
+      return c.json(table);
+    } catch (err) {
+      return c.json({ error: String(err?.message || err) }, 400);
+    }
+  });
+
+  api.delete("/seasonal/:month", (c) => {
+    const month = Number(c.req.param("month"));
+    if (!Number.isInteger(month) || month < 1 || month > 12) {
+      return c.json({ error: "month must be 1-12" }, 400);
+    }
+    return c.json(resetSeasonalMonth(store, month));
+  });
 
   // ------ llm health ------
   api.get("/llm/health", async (c) => c.json(await llmHealth()));

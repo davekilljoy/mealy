@@ -1,7 +1,10 @@
 // Month-by-month seasonal produce for Vancouver, BC. Used to bias the meal
-// planner toward fresh local ingredients. Copied verbatim from Facey.
+// planner toward fresh local ingredients. Originally copied from Facey; users
+// can now override per-month produce/notes via the settings page — those
+// overrides live in the `seasonal_overrides` config key and are merged on top
+// of these defaults at read time.
 
-const SEASONAL = {
+const SEASONAL_DEFAULTS = {
   1: {
     name: "January",
     produce: [
@@ -117,18 +120,102 @@ const SEASONAL = {
   },
 };
 
-export function getSeasonalContext(date = new Date()) {
+function loadOverrides(store) {
+  if (!store) return {};
+  const raw = store.getConfig("seasonal_overrides");
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveMonth(month, overrides) {
+  const def = SEASONAL_DEFAULTS[month];
+  if (!def) return null;
+  const ov = overrides?.[String(month)];
+  const produce = Array.isArray(ov?.produce) ? ov.produce : def.produce;
+  const notes   = typeof ov?.notes === "string" ? ov.notes : def.notes;
+  const isModified = !!ov && (Array.isArray(ov.produce) || typeof ov.notes === "string");
+  return {
+    month,
+    name: def.name,
+    produce,
+    notes,
+    is_modified: isModified,
+    default_produce: def.produce,
+    default_notes: def.notes,
+  };
+}
+
+export function getSeasonalContext(store, date = new Date()) {
   const month = date.getMonth() + 1;
-  const entry = SEASONAL[month];
-  if (!entry) return "";
+  const resolved = resolveMonth(month, loadOverrides(store));
+  if (!resolved) return "";
 
   const lines = [
-    `It's ${entry.name} in Vancouver, BC. The following local produce is in season:`,
-    entry.produce.join(", "),
+    `It's ${resolved.name} in Vancouver, BC. The following local produce is in season:`,
+    resolved.produce.join(", "),
     "",
-    entry.notes,
+    resolved.notes,
     "",
     "Lean into seasonal ingredients where they fit naturally — don't force it, but prefer what's fresh and local over out-of-season imports.",
   ];
   return lines.join("\n");
+}
+
+export function getSeasonalTable(store, date = new Date()) {
+  const currentMonth = date.getMonth() + 1;
+  const overrides = loadOverrides(store);
+  const months = [];
+  for (let m = 1; m <= 12; m++) {
+    const resolved = resolveMonth(m, overrides);
+    if (resolved) months.push(resolved);
+  }
+  return { region: "Vancouver, BC", current_month: currentMonth, months };
+}
+
+// Persist an override for a single month. `patch` may contain `produce`
+// (array of non-empty strings) and/or `notes` (string). Pass `null` for a
+// field to drop that override and fall back to the default. Returns the
+// updated table.
+export function setSeasonalOverride(store, month, patch) {
+  const m = Number(month);
+  if (!Number.isInteger(m) || m < 1 || m > 12) {
+    throw new Error("month must be an integer 1-12");
+  }
+  const overrides = loadOverrides(store);
+  const key = String(m);
+  const next = { ...(overrides[key] || {}) };
+
+  if (patch && "produce" in patch) {
+    if (patch.produce === null) {
+      delete next.produce;
+    } else if (Array.isArray(patch.produce)) {
+      next.produce = patch.produce
+        .map((p) => String(p).trim())
+        .filter(Boolean);
+    }
+  }
+  if (patch && "notes" in patch) {
+    if (patch.notes === null) {
+      delete next.notes;
+    } else {
+      next.notes = String(patch.notes);
+    }
+  }
+
+  if (Object.keys(next).length === 0) {
+    delete overrides[key];
+  } else {
+    overrides[key] = next;
+  }
+  store.setConfig("seasonal_overrides", JSON.stringify(overrides));
+  return getSeasonalTable(store);
+}
+
+export function resetSeasonalMonth(store, month) {
+  return setSeasonalOverride(store, month, { produce: null, notes: null });
 }

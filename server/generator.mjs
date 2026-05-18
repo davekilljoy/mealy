@@ -41,6 +41,38 @@ function ingredientBase(ing) {
   return String(ing || "").replace(QTY_RE, "").trim().toLowerCase();
 }
 
+const ADAM_FIELDS = [
+  { key: "adam_calories",  label: "Calories", unit: "kcal" },
+  { key: "adam_protein_g", label: "Protein",  unit: "g"    },
+  { key: "adam_carbs_g",   label: "Carbs",    unit: "g"    },
+  { key: "adam_fat_g",     label: "Fat",      unit: "g"    },
+  { key: "adam_fiber_g",   label: "Fiber",    unit: "g"    },
+];
+
+// Build the per-serving macros block for the user prompt. Returns "" when
+// the user hasn't set any targets, so we don't push noise into the LLM.
+// Pass `servings` when the meal's serving count is already known (single-
+// meal regen) — we pre-compute the totals to make the math obvious.
+function buildAdamTargets(store, { servings } = {}) {
+  const lines = [];
+  for (const f of ADAM_FIELDS) {
+    const raw = (store.getConfig(f.key) || "").trim();
+    const n = Number(raw);
+    if (!raw || !Number.isFinite(n) || n <= 0) continue;
+    const tail = servings && servings > 0
+      ? ` per serving (≈${Math.round(n * servings)} ${f.unit} across ${servings} servings)`
+      : " per serving";
+    lines.push(`- ${f.label}: ${n} ${f.unit}${tail}`);
+  }
+  if (!lines.length) return "";
+
+  const intro = servings && servings > 0
+    ? `Per-serving nutrition targets — design this ${servings}-serving dinner so each serving lands near these numbers:`
+    : "Per-serving nutrition targets — for each dinner, choose a serving count appropriate for the household and design ingredient quantities so each serving lands near these numbers:";
+  const guard = "Treat these as soft targets — aim within ~15%, not exact. Choose proteins, sides, and portions that naturally hit them; don't strip vegetables or pile on lean protein just to chase a number.";
+  return [intro, ...lines, "", guard].join("\n");
+}
+
 export function extractJson(text) {
   try { return JSON.parse(text); } catch (_e) {}
   const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
@@ -126,8 +158,11 @@ Use this exact structure:
     }
   }
 
-  const seasonal = getSeasonalContext();
+  const seasonal = getSeasonalContext(store);
   if (seasonal) userParts.push("", seasonal);
+
+  const adam = buildAdamTargets(store);
+  if (adam) userParts.push("", adam);
 
   // Leftover detection from last plan
   const lastPlan = recentPlans[0];
@@ -193,7 +228,7 @@ Use this exact structure:
   if (pantry && pantry.trim()) {
     userParts.push(
       "",
-      "Already on hand (work these into the meals where natural — don't force them, don't restrict the menu to only these):",
+      "Already on hand — the user explicitly listed these because they want them used up. Every item below MUST appear as an ingredient in at least one meal this week. Design the meals around them. You can still add other ingredients and dishes to round out the plan, but do not skip any of these:",
       pantry.trim(),
     );
   }
@@ -298,8 +333,11 @@ Use this exact structure:
     }
   }
 
-  const seasonal = getSeasonalContext();
+  const seasonal = getSeasonalContext(store);
   if (seasonal) userParts.push("", seasonal);
+
+  const adam = buildAdamTargets(store, { servings: target.servings });
+  if (adam) userParts.push("", adam);
 
   if (steerNote && steerNote.trim()) {
     const label = mode === "tune"

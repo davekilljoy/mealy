@@ -613,21 +613,89 @@ const RUNNING_MESSAGES = [
 ];
 
 async function viewGenerate() {
-  const [{ recipes }, { config }, sched] = await Promise.all([
+  const [{ recipes }, { config }, sched, seasonal] = await Promise.all([
     api("/recipes"),
     api("/config"),
     api("/scheduler"),
+    api("/seasonal"),
   ]);
   if (generateState.mealCount == null) {
-    generateState.mealCount = Number.parseInt(config.meal_count || "3", 10) || 3;
+    const stored = Number.parseInt(localStorage.getItem("mealy.generate.mealCount") || "", 10);
+    generateState.mealCount = Number.isFinite(stored) && stored >= 1 && stored <= 14
+      ? stored
+      : (Number.parseInt(config.meal_count || "3", 10) || 3);
   }
 
   clear(view);
   view.append(
     el("h1", { class: "page-title" }, "Generate"),
     el("p",  { class: "page-sub" }, "Plan a new week."),
-    el("hr", { class: "rule" }),
   );
+
+  // Current month's seasonal influence (click any line to edit, blur to save)
+  const currentMonth = (seasonal.months || []).find((m) => m.month === seasonal.current_month);
+  if (currentMonth) {
+    const produceEl = el("div", {
+      class: "seasonal-hint__produce seasonal-hint__editable",
+      contenteditable: "plaintext-only",
+      spellcheck: "false",
+      title: "Click to edit — saves on blur",
+    }, currentMonth.produce.join(", "));
+
+    const notesEl = el("div", {
+      class: "seasonal-hint__notes seasonal-hint__editable",
+      contenteditable: "plaintext-only",
+      spellcheck: "false",
+      title: "Click to edit — saves on blur",
+    }, currentMonth.notes || "");
+
+    let lastProduce = produceEl.textContent;
+    let lastNotes   = notesEl.textContent;
+
+    async function saveSeasonal(patch, fieldEl, fieldName) {
+      fieldEl.dataset.saving = "true";
+      try {
+        await api(`/seasonal/${currentMonth.month}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        });
+        toast(`${currentMonth.name} ${fieldName} saved`);
+      } catch (err) {
+        toast(`Save failed: ${err.message}`);
+      } finally {
+        delete fieldEl.dataset.saving;
+      }
+    }
+
+    produceEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); produceEl.blur(); }
+    });
+    produceEl.addEventListener("blur", () => {
+      const next = produceEl.textContent.trim();
+      if (next === lastProduce.trim()) return;
+      const produce = next.split(",").map((s) => s.trim()).filter(Boolean);
+      produceEl.textContent = produce.join(", ");
+      lastProduce = produceEl.textContent;
+      saveSeasonal({ produce }, produceEl, "produce");
+    });
+
+    notesEl.addEventListener("blur", () => {
+      const next = notesEl.textContent.trim();
+      if (next === lastNotes.trim()) return;
+      lastNotes = next;
+      saveSeasonal({ notes: next }, notesEl, "notes");
+    });
+
+    view.append(
+      el("div", { class: "seasonal-hint" },
+        el("div", { class: "seasonal-hint__eyebrow" }, `In season · ${currentMonth.name}`),
+        produceEl,
+        notesEl,
+      ),
+    );
+  }
+
+  view.append(el("hr", { class: "rule" }));
 
   // Meal count stepper
   view.append(
@@ -636,7 +704,10 @@ async function viewGenerate() {
       stepperEl({
         value: generateState.mealCount,
         min: 1, max: 14,
-        onChange: (v) => { generateState.mealCount = v; },
+        onChange: (v) => {
+          generateState.mealCount = v;
+          try { localStorage.setItem("mealy.generate.mealCount", String(v)); } catch {}
+        },
       }),
     ),
   );
@@ -659,10 +730,12 @@ async function viewGenerate() {
     anchorWrap.append(addBtn);
   }
   function openAnchorPicker(allRecipes) {
+    const existing = anchorWrap.parentNode?.querySelector(":scope > .anchor-picker");
+    if (existing) { existing.remove(); return; }
     const remaining = allRecipes.filter((r) => !generateState.anchors.some((a) => a.id === r.id));
     if (!remaining.length) { toast("No more saved recipes to pick"); return; }
     // Lightweight inline picker — list of buttons
-    const picker = el("div", { class: "diag" });
+    const picker = el("div", { class: "diag anchor-picker" });
     picker.style.maxHeight = "200px";
     picker.style.overflowY = "auto";
     for (const r of remaining) {
@@ -1128,56 +1201,16 @@ async function viewRecipeDetail(id) {
 // --------- Settings ----------
 
 async function viewSettings() {
-  const [{ config }, { preferences }, sched, llmH] = await Promise.all([
+  const [{ config }, { preferences }, sched, llmH, seasonal] = await Promise.all([
     api("/config"),
     api("/preferences"),
     api("/scheduler"),
     api("/llm/health"),
+    api("/seasonal"),
   ]);
 
   clear(view);
   view.append(el("h1", { class: "page-title" }, "Settings"));
-
-  // ----- System prompt -----
-  view.append(el("h2", { class: "section-head" }, "System prompt"));
-  const promptTa = el("textarea", { rows: 18, "aria-label": "System prompt" });
-  promptTa.value = config.system_prompt || "";
-  const promptSave = el("button", { class: "btn", type: "button" }, "Save prompt");
-  promptSave.addEventListener("click", async () => {
-    promptSave.disabled = true;
-    promptSave.textContent = "Saving…";
-    try {
-      await api("/config", { method: "PATCH", body: JSON.stringify({ key: "system_prompt", value: promptTa.value }) });
-      toast("Prompt saved");
-    } catch (err) {
-      toast(`Save failed: ${err.message}`);
-    } finally {
-      promptSave.disabled = false;
-      promptSave.textContent = "Save prompt";
-    }
-  });
-  view.append(promptTa, el("div", { style: "margin-top:12px;" }, promptSave));
-
-  // ----- Defaults -----
-  view.append(el("h2", { class: "section-head" }, "Defaults"));
-  let curCount = Number.parseInt(config.meal_count || "3", 10) || 3;
-  const countStep = stepperEl({
-    value: curCount, min: 1, max: 14,
-    onChange: async (v) => {
-      curCount = v;
-      try {
-        await api("/config", { method: "PATCH", body: JSON.stringify({ key: "meal_count", value: String(v) }) });
-      } catch (err) {
-        toast(`Save failed: ${err.message}`);
-      }
-    },
-  });
-  view.append(
-    el("label", { class: "field" },
-      el("span", { class: "label" }, "Default meal count"),
-      countStep,
-    ),
-  );
 
   // ----- Preferences -----
   view.append(el("h2", { class: "section-head" }, "Preferences"));
@@ -1233,24 +1266,211 @@ async function viewSettings() {
   });
   view.append(el("div", { class: "add-form" }, kindSelect, valueInput, addBtn));
 
-  // ----- Scheduler -----
-  view.append(el("h2", { class: "section-head" }, "Scheduler"));
+  // ----- A.D.A.M. (Adjustable Dinner Allowance Macros) -----
+  view.append(
+    el("h2", { class: "section-head" }, "A.D.A.M."),
+    el("p", { class: "section-sub" },
+      "Adjustable Dinner Allowance Macros. Optional targets the planner can lean on — values are per serving (one person's plate). The planner scales them by the meal's serving count, so 45 g protein on a 3-serving dinner is ~135 g across the dish. Leave blank to ignore."),
+  );
 
+  const ADAM_FIELDS = [
+    { key: "adam_calories",  label: "Calories",  unit: "kcal", placeholder: "e.g. 700" },
+    { key: "adam_protein_g", label: "Protein",   unit: "g",    placeholder: "e.g. 45" },
+    { key: "adam_carbs_g",   label: "Carbs",     unit: "g",    placeholder: "e.g. 70" },
+    { key: "adam_fat_g",     label: "Fat",       unit: "g",    placeholder: "e.g. 25" },
+    { key: "adam_fiber_g",   label: "Fiber",     unit: "g",    placeholder: "e.g. 10" },
+  ];
+
+  const adamGrid = el("div", { class: "adam-grid" });
+  for (const f of ADAM_FIELDS) {
+    const input = el("input", {
+      type: "number", min: 0, step: 1,
+      inputmode: "numeric",
+      placeholder: f.placeholder,
+      "aria-label": `${f.label} (${f.unit})`,
+    });
+    input.value = config[f.key] || "";
+    let saveT = null;
+    input.addEventListener("input", () => {
+      clearTimeout(saveT);
+      saveT = setTimeout(async () => {
+        try {
+          await api("/config", {
+            method: "PATCH",
+            body: JSON.stringify({ key: f.key, value: input.value.trim() }),
+          });
+        } catch (err) { toast(`Save failed: ${err.message}`); }
+      }, 500);
+    });
+    adamGrid.append(
+      el("label", { class: "adam-field" },
+        el("span", { class: "adam-field__label" }, f.label),
+        el("div", { class: "adam-field__input" },
+          input,
+          el("span", { class: "adam-field__unit" }, f.unit),
+        ),
+      ),
+    );
+  }
+  view.append(adamGrid);
+
+  // ----- Seasonal produce -----
+  view.append(
+    el("h2", { class: "section-head" }, "Seasonal produce"),
+    el("p", { class: "section-sub" },
+      `What's in season around ${seasonal.region}. The planner leans toward the current month's list. Edit any month to suit your region or pantry — reset to restore the default.`),
+  );
+
+  const seasonalList = el("ol", { class: "seasonal" });
+  function renderSeasonal(table) {
+    clear(seasonalList);
+    for (const m of table.months) {
+      seasonalList.append(renderSeasonalRow(m, table.current_month));
+    }
+  }
+
+  async function replaceSeasonalRow(month, oldRow) {
+    const updated = await api("/seasonal");
+    seasonal.months = updated.months;
+    const m = updated.months.find((x) => x.month === month);
+    if (!m) return;
+    const fresh = renderSeasonalRow(m, updated.current_month);
+    oldRow.replaceWith(fresh);
+  }
+
+  function renderSeasonalRow(m, currentMonth) {
+    const isCurrent = m.month === currentMonth;
+    const row = el("li", {
+      class: `seasonal__row${isCurrent ? " seasonal__row--current" : ""}${m.is_modified ? " seasonal__row--modified" : ""}`,
+    });
+
+    const resetBtn = m.is_modified
+      ? el("button", { class: "btn btn--text seasonal__reset", type: "button" }, "Reset")
+      : null;
+
+    const head = el("div", { class: "seasonal__head" },
+      el("span", { class: "seasonal__month" }, m.name),
+      isCurrent ? el("span", { class: "seasonal__badge" }, "Now") : null,
+      m.is_modified ? el("span", { class: "seasonal__badge seasonal__badge--modified" }, "Modified") : null,
+      resetBtn,
+    );
+
+    const produceEl = el("div", {
+      class: "seasonal__produce seasonal__editable",
+      contenteditable: "plaintext-only",
+      spellcheck: "false",
+      title: "Click to edit — saves on blur",
+    }, m.produce.join(", "));
+
+    const notesEl = el("div", {
+      class: "seasonal__notes seasonal__editable",
+      contenteditable: "plaintext-only",
+      spellcheck: "false",
+      title: "Click to edit — saves on blur",
+    }, m.notes || "");
+
+    row.append(head, produceEl, notesEl);
+
+    let lastProduce = produceEl.textContent;
+    let lastNotes   = notesEl.textContent;
+
+    async function saveField(patch, fieldEl, fieldName) {
+      fieldEl.dataset.saving = "true";
+      try {
+        await api(`/seasonal/${m.month}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        });
+        toast(`${m.name} ${fieldName} saved`);
+        await replaceSeasonalRow(m.month, row);
+      } catch (err) {
+        toast(`Save failed: ${err.message}`);
+        delete fieldEl.dataset.saving;
+      }
+    }
+
+    produceEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); produceEl.blur(); }
+    });
+    produceEl.addEventListener("blur", () => {
+      const next = produceEl.textContent.trim();
+      if (next === lastProduce.trim()) return;
+      const produce = next.split(",").map((s) => s.trim()).filter(Boolean);
+      produceEl.textContent = produce.join(", ");
+      lastProduce = produceEl.textContent;
+      saveField({ produce }, produceEl, "produce");
+    });
+
+    notesEl.addEventListener("blur", () => {
+      const next = notesEl.textContent.trim();
+      if (next === lastNotes.trim()) return;
+      lastNotes = next;
+      saveField({ notes: next }, notesEl, "notes");
+    });
+
+    if (resetBtn) {
+      resetBtn.addEventListener("click", async () => {
+        resetBtn.disabled = true;
+        try {
+          await api(`/seasonal/${m.month}`, { method: "DELETE" });
+          toast(`${m.name} reset to default`);
+          await replaceSeasonalRow(m.month, row);
+        } catch (err) {
+          toast(`Reset failed: ${err.message}`);
+          resetBtn.disabled = false;
+        }
+      });
+    }
+
+    return row;
+  }
+
+  renderSeasonal(seasonal);
+  view.append(seasonalList);
+
+  // ----- Scheduler -----
   const enabledBtn = el("button", {
     class: "toggle", type: "button",
     "aria-pressed": String(sched.enabled),
+    "aria-label": "Auto-generate weekly",
   },
     el("span", { class: "toggle__switch" }),
-    el("span", {}, "Auto-generate weekly"),
   );
+  view.append(
+    el("div", { class: "section-head section-head--with-toggle" },
+      el("h2", { class: "section-head__title" }, "Scheduler"),
+      enabledBtn,
+    ),
+  );
+
+  const schedBody = el("div", { class: "sched-body", hidden: !sched.enabled });
+  view.append(schedBody);
+
   enabledBtn.addEventListener("click", async () => {
     const next = enabledBtn.getAttribute("aria-pressed") !== "true";
     enabledBtn.setAttribute("aria-pressed", String(next));
+    schedBody.hidden = !next;
     try {
       await api("/config", { method: "PATCH", body: JSON.stringify({ key: "scheduler_enabled", value: String(next) }) });
     } catch (err) { toast(`Save failed: ${err.message}`); }
   });
-  view.append(el("div", { style: "margin: 16px 0;" }, enabledBtn));
+
+  // Meal count (formerly in Defaults)
+  let curCount = Number.parseInt(config.meal_count || "3", 10) || 3;
+  schedBody.append(
+    el("label", { class: "field" },
+      el("span", { class: "label" }, "Meals per plan"),
+      stepperEl({
+        value: curCount, min: 1, max: 14,
+        onChange: async (v) => {
+          curCount = v;
+          try {
+            await api("/config", { method: "PATCH", body: JSON.stringify({ key: "meal_count", value: String(v) }) });
+          } catch (err) { toast(`Save failed: ${err.message}`); }
+        },
+      }),
+    ),
+  );
 
   // Day pills
   const dayPills = el("div", { class: "day-pills" });
@@ -1268,7 +1488,7 @@ async function viewSettings() {
     });
     dayPills.append(b);
   }
-  view.append(
+  schedBody.append(
     el("label", { class: "field" },
       el("span", { class: "label" }, "Day"),
       dayPills,
@@ -1288,7 +1508,7 @@ async function viewSettings() {
   const hourInc = el("button", { type: "button", "aria-label": "Later" }, "+");
   hourDec.addEventListener("click", () => setHour(curHour - 1));
   hourInc.addEventListener("click", () => setHour(curHour + 1));
-  view.append(
+  schedBody.append(
     el("label", { class: "field" },
       el("span", { class: "label" }, "Hour (24h)"),
       el("div", { class: "stepper" }, hourDec, hourValEl, hourInc),
@@ -1296,7 +1516,7 @@ async function viewSettings() {
   );
 
   if (sched.next_run_ms) {
-    view.append(
+    schedBody.append(
       el("div", { class: "row" },
         el("span", { class: "row__label" }, "Next run"),
         el("span", { class: "row__value" }, new Date(sched.next_run_ms).toLocaleString()),
@@ -1304,7 +1524,27 @@ async function viewSettings() {
     );
   }
 
-  // ----- LLM health -----
+  // ----- System prompt -----
+  view.append(el("h2", { class: "section-head" }, "System prompt"));
+  const promptTa = el("textarea", { rows: 18, "aria-label": "System prompt" });
+  promptTa.value = config.system_prompt || "";
+  const promptSave = el("button", { class: "btn", type: "button" }, "Save prompt");
+  promptSave.addEventListener("click", async () => {
+    promptSave.disabled = true;
+    promptSave.textContent = "Saving…";
+    try {
+      await api("/config", { method: "PATCH", body: JSON.stringify({ key: "system_prompt", value: promptTa.value }) });
+      toast("Prompt saved");
+    } catch (err) {
+      toast(`Save failed: ${err.message}`);
+    } finally {
+      promptSave.disabled = false;
+      promptSave.textContent = "Save prompt";
+    }
+  });
+  view.append(promptTa, el("div", { style: "margin-top:12px;" }, promptSave));
+
+  // ----- System health -----
   view.append(el("h2", { class: "section-head" }, "System health"));
   view.append(
     el("div", { class: "status-line" },
@@ -1318,26 +1558,6 @@ async function viewSettings() {
       el("pre", {}, JSON.stringify(llmH, null, 2)),
     ),
   );
-
-  // ----- Manual run -----
-  view.append(el("h2", { class: "section-head" }, "Manual run"));
-  const runBtn = el("button", { class: "btn btn--block", type: "button" }, "Run scheduler now");
-  runBtn.addEventListener("click", async () => {
-    runBtn.disabled = true;
-    runBtn.textContent = "Running…";
-    try {
-      await api("/scheduler/run-now", { method: "POST" });
-      toast("Started — check Plans in a minute.");
-    } catch (err) {
-      toast(`Failed: ${err.message}`);
-    } finally {
-      setTimeout(() => {
-        runBtn.disabled = false;
-        runBtn.textContent = "Run scheduler now";
-      }, 1500);
-    }
-  });
-  view.append(runBtn);
 }
 
 // ---------------- boot ----------------
