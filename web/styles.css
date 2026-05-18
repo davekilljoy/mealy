@@ -477,6 +477,34 @@ button {
   text-decoration-color: var(--accent);
 }
 
+.meal__servings {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.meal__servings[data-saving="true"] { opacity: 0.5; pointer-events: none; }
+
+.meal__servings-input {
+  width: 3.5em;
+  min-height: 0;
+  padding: 1px 6px;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+.meal__servings-input::-webkit-outer-spin-button,
+.meal__servings-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 /* version history modal */
 dialog.history {
   border: 0;
@@ -657,6 +685,48 @@ dialog.warn .warn__actions .btn { min-height: 44px; padding: 0 18px; }
   margin-bottom: 24px;
 }
 
+.meal__nutrition {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -16px 0 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+.meal__nutrition-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--ink-2);
+  background: var(--paper-2);
+}
+
+.meal__nutrition-val { font-weight: 600; color: var(--ink); }
+.meal__nutrition-unit {
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--ink-3);
+}
+
+.meal__nutrition-chip--ok {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: transparent;
+}
+.meal__nutrition-chip--ok .meal__nutrition-val { color: var(--accent); }
+.meal__nutrition-chip--ok .meal__nutrition-unit { color: var(--accent); opacity: 0.7; }
+
+.meal__nutrition-chip--over,
+.meal__nutrition-chip--under {
+  color: var(--ink-2);
+  border-color: var(--rule-thick);
+}
+
 .meal__subhead {
   font-size: 0.75rem;
   font-weight: 600;
@@ -726,6 +796,14 @@ label.field {
   display: block;
   margin: 20px 0;
 }
+
+.field-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+.field-row > label.field { margin: 20px 0; }
 label.field > .label {
   display: block;
   font-size: 0.75rem;

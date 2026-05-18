@@ -41,6 +41,72 @@ function ingredientBase(ing) {
   return String(ing || "").replace(QTY_RE, "").trim().toLowerCase();
 }
 
+// Parse the leading quantity from an ingredient string. Handles:
+//   - integer / decimal: "2", "1.5"
+//   - simple fraction:   "1/2"
+//   - mixed fraction:    "1 1/2"
+//   - range:             "2-3", "2 to 3"
+// Returns { value, rest } or { range:[a,b], rest } or null when unparseable.
+function parseLeadingQty(s) {
+  const str = String(s || "").trim();
+  let m;
+  // Range: "2-3 cloves" or "2 to 3 cloves"
+  m = str.match(/^(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)\s+(.+)$/i);
+  if (m) return { range: [Number(m[1]), Number(m[2])], rest: m[3] };
+  // Mixed fraction: "1 1/2 cups flour"
+  m = str.match(/^(\d+)\s+(\d+)\/(\d+)\s+(.+)$/);
+  if (m) return { value: Number(m[1]) + Number(m[2]) / Number(m[3]), rest: m[4] };
+  // Simple fraction: "1/2 cup rice"
+  m = str.match(/^(\d+)\/(\d+)\s+(.+)$/);
+  if (m) return { value: Number(m[1]) / Number(m[2]), rest: m[3] };
+  // Integer or decimal: "1.5 lbs chicken"
+  m = str.match(/^(\d+(?:\.\d+)?)\s+(.+)$/);
+  if (m) return { value: Number(m[1]), rest: m[2] };
+  return null;
+}
+
+const COMMON_FRACTIONS = [
+  { v: 1 / 8, s: "1/8" },
+  { v: 1 / 4, s: "1/4" },
+  { v: 1 / 3, s: "1/3" },
+  { v: 1 / 2, s: "1/2" },
+  { v: 2 / 3, s: "2/3" },
+  { v: 3 / 4, s: "3/4" },
+];
+
+function formatQty(value) {
+  if (!Number.isFinite(value) || value <= 0) return String(value);
+  const whole = Math.round(value);
+  // Snap to whole when within 5% (or 0.05 for small values)
+  if (Math.abs(value - whole) < Math.max(0.05, whole * 0.05)) return String(whole);
+  const intPart = Math.floor(value);
+  const frac = value - intPart;
+  for (const f of COMMON_FRACTIONS) {
+    if (Math.abs(frac - f.v) < 0.04) {
+      return intPart > 0 ? `${intPart} ${f.s}` : f.s;
+    }
+  }
+  // Fall back to one decimal place, trim trailing .0
+  return value.toFixed(1).replace(/\.0$/, "");
+}
+
+export function scaleIngredient(str, ratio) {
+  const parsed = parseLeadingQty(str);
+  if (!parsed) return str;
+  if (parsed.range) {
+    const [a, b] = parsed.range;
+    return `${formatQty(a * ratio)}-${formatQty(b * ratio)} ${parsed.rest}`;
+  }
+  return `${formatQty(parsed.value * ratio)} ${parsed.rest}`;
+}
+
+export function scaleIngredients(ingredients, ratio) {
+  if (!Array.isArray(ingredients) || !Number.isFinite(ratio) || ratio === 1) {
+    return ingredients;
+  }
+  return ingredients.map((ing) => scaleIngredient(String(ing), ratio));
+}
+
 const ADAM_FIELDS = [
   { key: "adam_calories",  label: "Calories", unit: "kcal" },
   { key: "adam_protein_g", label: "Protein",  unit: "g"    },
@@ -70,7 +136,8 @@ function buildAdamTargets(store, { servings } = {}) {
     ? `Per-serving nutrition targets — design this ${servings}-serving dinner so each serving lands near these numbers:`
     : "Per-serving nutrition targets — for each dinner, choose a serving count appropriate for the household and design ingredient quantities so each serving lands near these numbers:";
   const guard = "Treat these as soft targets — aim within ~15%, not exact. Choose proteins, sides, and portions that naturally hit them; don't strip vegetables or pile on lean protein just to chase a number.";
-  return [intro, ...lines, "", guard].join("\n");
+  const reportRule = "Populate each meal's `nutrition` field with realistic per-serving estimates (calories_per_serving, protein_g, carbs_g, fat_g, fiber_g) computed from the ingredient quantities you chose. These are the user's check that the plan actually hit the targets.";
+  return [intro, ...lines, "", guard, "", reportRule].join("\n");
 }
 
 export function extractJson(text) {
@@ -118,6 +185,7 @@ export function formatMealPlanMarkdown({ meals, grocery_list, summary }) {
 export async function generateMealPlan({
   store,
   mealCount,
+  servings,
   seedRecipeIds,
   styleNote,
   pantry,
@@ -128,7 +196,7 @@ export async function generateMealPlan({
 
 Respond in JSON only. No markdown, no explanation.
 Use this exact structure:
-{"headline": "Fun, punchy card title — 5 words MAX. E.g. 'Pork Gets Spicy'", "summary": "One sentence describing this week's meals and vibe", "bridge_ingredients": ["spinach (meals 1 & 3)", "hoisin sauce (meals 2 & 3)"], "meals": [{"name": "...", "description": "...", "servings": 3, "ingredients": ["1 lb chicken breast", "2 tbsp soy sauce", "..."], "instructions": ["Step 1...", "Step 2..."], "prep_time_min": 0, "cook_time_min": 0}], "grocery_list": ["1 lb chicken breast", "2 tbsp soy sauce", "..."]}`;
+{"headline": "Fun, punchy card title — 5 words MAX. E.g. 'Pork Gets Spicy'", "summary": "One sentence describing this week's meals and vibe", "bridge_ingredients": ["spinach (meals 1 & 3)", "hoisin sauce (meals 2 & 3)"], "meals": [{"name": "...", "description": "...", "servings": 3, "ingredients": ["1 lb chicken breast", "2 tbsp soy sauce", "..."], "instructions": ["Step 1...", "Step 2..."], "prep_time_min": 0, "cook_time_min": 0, "nutrition": {"calories_per_serving": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0}}], "grocery_list": ["1 lb chicken breast", "2 tbsp soy sauce", "..."]}`;
 
   // Resolve meal count.
   const configured = Number.parseInt(store.getConfig("meal_count") || "3", 10);
@@ -138,12 +206,21 @@ Use this exact structure:
     : 3
   ));
 
+  // Resolve serving size for each meal.
+  const servingsNum = Number(servings);
+  const perMealServings = Number.isInteger(servingsNum) && servingsNum >= 1 && servingsNum <= 20
+    ? servingsNum
+    : null;
+
   // ---------- user prompt ----------
   const preferences = store.listPreferences();
   const recentPlans = store.listPlans(4);
   const seedRecipes = seedRecipeIds?.length ? store.listSavedRecipesByIds(seedRecipeIds) : [];
 
-  const userParts = [`Plan ${count} dinners for next week.`];
+  const intro = perMealServings
+    ? `Plan ${count} dinners for next week. Each meal MUST be sized for ${perMealServings} servings — set "servings": ${perMealServings} on every meal and scale ingredient quantities to feed ${perMealServings} adults.`
+    : `Plan ${count} dinners for next week.`;
+  const userParts = [intro];
 
   if (preferences.length) {
     const grouped = {};
@@ -161,7 +238,7 @@ Use this exact structure:
   const seasonal = getSeasonalContext(store);
   if (seasonal) userParts.push("", seasonal);
 
-  const adam = buildAdamTargets(store);
+  const adam = buildAdamTargets(store, { servings: perMealServings });
   if (adam) userParts.push("", adam);
 
   // Leftover detection from last plan
@@ -303,7 +380,7 @@ ${constraint}
 
 Respond in JSON only — a single meal object. No markdown, no explanation.
 Use this exact structure:
-{"name": "...", "description": "...", "servings": 3, "ingredients": ["1 lb chicken breast", "2 tbsp soy sauce", "..."], "instructions": ["Step 1...", "Step 2..."], "prep_time_min": 0, "cook_time_min": 0}`;
+{"name": "...", "description": "...", "servings": 3, "ingredients": ["1 lb chicken breast", "2 tbsp soy sauce", "..."], "instructions": ["Step 1...", "Step 2..."], "prep_time_min": 0, "cook_time_min": 0, "nutrition": {"calories_per_serving": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0}}`;
 
   const verb = mode === "tune" ? "Tune" : "Replace";
   const userParts = [`${verb} this meal in the plan: "${target.name}"${target.description ? ` — ${target.description}` : ""}.`];

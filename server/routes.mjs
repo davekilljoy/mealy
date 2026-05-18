@@ -2,7 +2,7 @@
 
 import { Hono } from "hono";
 import { llmHealth } from "./llm.mjs";
-import { formatMealPlanMarkdown, regenerateMeal } from "./generator.mjs";
+import { formatMealPlanMarkdown, regenerateMeal, scaleIngredients } from "./generator.mjs";
 import { tagRecipe } from "./tagger.mjs";
 import { RECIPE_TAG_TAXONOMY, LLM_TAG_DIMENSIONS } from "./taxonomy.mjs";
 import { getSeasonalTable, setSeasonalOverride, resetSeasonalMonth } from "./seasonal.mjs";
@@ -48,6 +48,38 @@ export function createRoutes({ store, scheduler }) {
     const ok = store.deletePlan(c.req.param("id"));
     if (!ok) return c.json({ error: "not_found" }, 404);
     return c.json({ ok: true, unread_count: store.getUnreadCount() });
+  });
+
+  // Rescale a single meal's servings — multiplies ingredient quantities by
+  // the new/old ratio, rebuilds the grocery list. Per-serving nutrition is
+  // unchanged (it's per serving).
+  api.patch("/plans/:planId/meals/:mealId/servings", async (c) => {
+    const plan = store.getPlan(c.req.param("planId"));
+    if (!plan) return c.json({ error: "plan_not_found" }, 404);
+    const mealId = c.req.param("mealId");
+    const idx = (plan.meals || []).findIndex((m) => m && m.id === mealId);
+    if (idx < 0) return c.json({ error: "meal_not_found" }, 404);
+
+    const body = await c.req.json().catch(() => ({}));
+    const next = Number(body?.servings);
+    if (!Number.isInteger(next) || next < 1 || next > 20) {
+      return c.json({ error: "servings must be an integer 1-20" }, 400);
+    }
+    const prev = Number(plan.meals[idx].servings) || 0;
+    if (prev <= 0) return c.json({ error: "meal has no prior servings to scale from" }, 400);
+
+    const ratio = next / prev;
+    const scaled = scaleIngredients(plan.meals[idx].ingredients || [], ratio);
+    const meals = [...plan.meals];
+    meals[idx] = { ...meals[idx], servings: next, ingredients: scaled };
+
+    const grocery = consolidateGrocery(meals);
+    const summary = meals.map((m) => m.name || "Untitled").join(", ");
+    const md = formatMealPlanMarkdown({ meals, grocery_list: grocery, summary });
+    const updated = store.updatePlanMeals(plan.id, {
+      meals, grocery_list: grocery, summary, content: md,
+    });
+    return c.json({ plan: augmentMeals(updated, store), meal: meals[idx] });
   });
 
   api.post("/plans/:planId/meals/:mealId/regen", async (c) => {
@@ -108,6 +140,7 @@ export function createRoutes({ store, scheduler }) {
     const body = await c.req.json().catch(() => ({}));
     const opts = {
       mealCount: body?.meal_count,
+      servings: body?.servings,
       seedRecipeIds: Array.isArray(body?.seed_recipe_ids) ? body.seed_recipe_ids : [],
       styleNote: body?.style_note ? String(body.style_note) : "",
       pantry: body?.pantry ? String(body.pantry) : "",

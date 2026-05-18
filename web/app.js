@@ -274,7 +274,11 @@ async function viewPlans() {
 }
 
 async function viewPlanDetail(id) {
-  const [{ plan }] = await Promise.all([api(`/plans/${id}`)]);
+  const [{ plan }, { config }] = await Promise.all([
+    api(`/plans/${id}`),
+    api("/config"),
+  ]);
+  const adamTargets = readAdamTargets(config);
   // Fire-and-forget the read marker
   api(`/plans/${id}/read`, { method: "POST" }).then(refreshUnread).catch(() => {});
 
@@ -303,7 +307,7 @@ async function viewPlanDetail(id) {
     plan.grocery_list = updatedPlan.grocery_list;
     plan.summary = updatedPlan.summary;
     const newMeal = plan.meals[oldIdx];
-    const newNode = mealBlock(newMeal, oldIdx + 1, plan.id, { onRegen: handleRegen });
+    const newNode = mealBlock(newMeal, oldIdx + 1, plan.id, { onRegen: handleRegen, adamTargets });
     newNode.dataset.mealId = newMeal.id;
     oldNode.replaceWith(newNode);
     toast(mode === "tune" ? `Tuned: ${newMeal.name}` : `Replaced with ${newMeal.name}`);
@@ -312,7 +316,7 @@ async function viewPlanDetail(id) {
   }
 
   (plan.meals || []).forEach((meal, i) => {
-    const node = mealBlock(meal, i + 1, plan.id, { onRegen: handleRegen });
+    const node = mealBlock(meal, i + 1, plan.id, { onRegen: handleRegen, adamTargets });
     node.dataset.mealId = meal.id;
     view.append(node);
   });
@@ -369,7 +373,7 @@ function refreshGroceryList(plan) {
   next.replaceWith(ul);
 }
 
-function mealBlock(meal, num, planId, { onRegen } = {}) {
+function mealBlock(meal, num, planId, { onRegen, adamTargets } = {}) {
   const wrap = el("article", { class: "meal" });
 
   const star = el("button", {
@@ -446,19 +450,26 @@ function mealBlock(meal, num, planId, { onRegen } = {}) {
   const times = [];
   if (meal.prep_time_min) times.push(`Prep ${meal.prep_time_min} min`);
   if (meal.cook_time_min) times.push(`Cook ${meal.cook_time_min} min`);
-  if (meal.servings)      times.push(`Serves ${meal.servings}`);
 
   const revisionCount = Array.isArray(meal.revisions) ? meal.revisions.length : 0;
   let metaNode = null;
-  if (times.length || revisionCount) {
-    metaNode = el("div", { class: "meal__meta" }, times.join(" · "));
-    if (revisionCount) {
+  if (times.length || meal.servings || revisionCount) {
+    metaNode = el("div", { class: "meal__meta" });
+    if (times.length) metaNode.append(document.createTextNode(times.join(" · ")));
+    if (meal.servings && planId) {
       if (times.length) metaNode.append(document.createTextNode(" · "));
+      metaNode.append(servingsEditorEl(meal, wrap, planId, { onRescale: onRegen, adamTargets }));
+    } else if (meal.servings) {
+      if (times.length) metaNode.append(document.createTextNode(" · "));
+      metaNode.append(document.createTextNode(`Serves ${meal.servings}`));
+    }
+    if (revisionCount) {
+      if (times.length || meal.servings) metaNode.append(document.createTextNode(" · "));
       const link = el("button", {
         class: "meal__tuned-link",
         type: "button",
         title: "View prior versions",
-      }, `↶ Tuned · ${revisionCount} version${revisionCount === 1 ? "" : "s"}`);
+      }, `${revisionCount} version${revisionCount === 1 ? "" : "s"}`);
       link.addEventListener("click", () => openHistoryModal(meal));
       metaNode.append(link);
     }
@@ -472,6 +483,7 @@ function mealBlock(meal, num, planId, { onRegen } = {}) {
     ),
     meal.description ? el("p", { class: "meal__desc" }, meal.description) : null,
     metaNode,
+    nutritionRowEl(meal, adamTargets),
   );
 
   appendRecipeBody(wrap, meal);
@@ -595,10 +607,133 @@ function splitIngredient(ing) {
   return { qty: "", name: String(ing || "") };
 }
 
+// --------- ADAM (nutrition targets) ----------
+
+const ADAM_DEFS = [
+  { key: "adam_calories",  field: "calories_per_serving", label: "kcal",  short: "cal" },
+  { key: "adam_protein_g", field: "protein_g",            label: "g pro", short: "protein" },
+  { key: "adam_carbs_g",   field: "carbs_g",              label: "g carb", short: "carbs" },
+  { key: "adam_fat_g",     field: "fat_g",                label: "g fat", short: "fat" },
+  { key: "adam_fiber_g",   field: "fiber_g",              label: "g fbr", short: "fiber" },
+];
+
+// Pull the set ADAM targets out of /config. Returns an array of { def, target }
+// for fields the user has filled in with a positive number.
+function readAdamTargets(config) {
+  const out = [];
+  for (const def of ADAM_DEFS) {
+    const raw = String(config?.[def.key] ?? "").trim();
+    const n = Number(raw);
+    if (!raw || !Number.isFinite(n) || n <= 0) continue;
+    out.push({ def, target: n });
+  }
+  return out;
+}
+
+// Build the nutrition row for a meal card. Returns null when the user has no
+// targets set OR the meal has no nutrition data to report against.
+function nutritionRowEl(meal, targets) {
+  if (!targets?.length) return null;
+  const n = meal?.nutrition;
+  if (!n || typeof n !== "object") return null;
+
+  const chips = [];
+  for (const { def, target } of targets) {
+    const v = Number(n[def.field]);
+    if (!Number.isFinite(v)) continue;
+    const diff = (v - target) / target;
+    const pct = Math.round(diff * 100);
+    let state = "ok";
+    if (Math.abs(diff) > 0.15) state = diff > 0 ? "over" : "under";
+    const title = state === "ok"
+      ? `${def.short}: target ${target} ${def.label} — within range (${pct >= 0 ? "+" : ""}${pct}%)`
+      : `${def.short}: target ${target} ${def.label} — ${pct >= 0 ? "+" : ""}${pct}%`;
+    chips.push(
+      el("span", { class: `meal__nutrition-chip meal__nutrition-chip--${state}`, title },
+        el("span", { class: "meal__nutrition-val" }, String(Math.round(v))),
+        el("span", { class: "meal__nutrition-unit" }, def.label),
+      ),
+    );
+  }
+  if (!chips.length) return null;
+  return el("div", { class: "meal__nutrition", title: "Per-serving estimates vs. your A.D.A.M. targets" }, ...chips);
+}
+
+// "Serves N" rendered as a small button. Click swaps in a number input;
+// blur (or Enter) saves — server rescales ingredients proportionately.
+function servingsEditorEl(meal, mealNode, planId, { onRescale, adamTargets } = {}) {
+  const wrap = el("span", { class: "meal__servings" });
+
+  const renderDisplay = () => {
+    clear(wrap);
+    const btn = el("button", {
+      class: "meal__tuned-link meal__servings-btn",
+      type: "button",
+      title: "Click to change servings — ingredients will scale proportionately",
+    }, `Serves ${meal.servings}`);
+    btn.addEventListener("click", renderEditor);
+    wrap.append(btn);
+  };
+
+  const renderEditor = () => {
+    clear(wrap);
+    const input = el("input", {
+      type: "number", min: 1, max: 20, step: 1,
+      class: "meal__servings-input",
+      "aria-label": "New servings count",
+    });
+    input.value = String(meal.servings);
+
+    let committed = false;
+    async function commit() {
+      if (committed) return;
+      committed = true;
+      const next = Number(input.value);
+      if (!Number.isInteger(next) || next < 1 || next > 20 || next === Number(meal.servings)) {
+        renderDisplay();
+        return;
+      }
+      wrap.dataset.saving = "true";
+      try {
+        const res = await api(`/plans/${planId}/meals/${encodeURIComponent(meal.id)}/servings`, {
+          method: "PATCH",
+          body: JSON.stringify({ servings: next }),
+        });
+        // Swap the whole meal card with one rendered from the new data
+        const updatedMeal = res.meal;
+        // Preserve saved/revisions metadata from the augmented plan
+        const fromPlan = (res.plan?.meals || []).find((m) => m.id === meal.id) || updatedMeal;
+        const fresh = mealBlock(fromPlan, undefined, planId, { onRegen: onRescale, adamTargets });
+        fresh.dataset.mealId = fromPlan.id;
+        mealNode.replaceWith(fresh);
+        toast(`Scaled to ${next} servings`);
+      } catch (err) {
+        toast(`Scale failed: ${err.message}`);
+        delete wrap.dataset.saving;
+        renderDisplay();
+      }
+    }
+
+    input.addEventListener("blur", commit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+      if (e.key === "Escape") { committed = true; renderDisplay(); }
+    });
+
+    wrap.append(document.createTextNode("Serves "), input);
+    input.focus();
+    input.select();
+  };
+
+  renderDisplay();
+  return wrap;
+}
+
 // --------- Generate ----------
 
 let generateState = {
   mealCount: null,
+  servings: null,
   anchors: [], // array of { id, name }
   styleNote: "",
   pantry: "",
@@ -624,6 +759,12 @@ async function viewGenerate() {
     generateState.mealCount = Number.isFinite(stored) && stored >= 1 && stored <= 14
       ? stored
       : (Number.parseInt(config.meal_count || "3", 10) || 3);
+  }
+  if (generateState.servings == null) {
+    const storedS = Number.parseInt(localStorage.getItem("mealy.generate.servings") || "", 10);
+    generateState.servings = Number.isFinite(storedS) && storedS >= 1 && storedS <= 20
+      ? storedS
+      : 3;
   }
 
   clear(view);
@@ -697,18 +838,31 @@ async function viewGenerate() {
 
   view.append(el("hr", { class: "rule" }));
 
-  // Meal count stepper
+  // Meal count + serves, side-by-side
   view.append(
-    el("label", { class: "field" },
-      el("span", { class: "label" }, "Number of meals"),
-      stepperEl({
-        value: generateState.mealCount,
-        min: 1, max: 14,
-        onChange: (v) => {
-          generateState.mealCount = v;
-          try { localStorage.setItem("mealy.generate.mealCount", String(v)); } catch {}
-        },
-      }),
+    el("div", { class: "field-row" },
+      el("label", { class: "field" },
+        el("span", { class: "label" }, "Number of meals"),
+        stepperEl({
+          value: generateState.mealCount,
+          min: 1, max: 14,
+          onChange: (v) => {
+            generateState.mealCount = v;
+            try { localStorage.setItem("mealy.generate.mealCount", String(v)); } catch {}
+          },
+        }),
+      ),
+      el("label", { class: "field" },
+        el("span", { class: "label" }, "Serves"),
+        stepperEl({
+          value: generateState.servings,
+          min: 1, max: 20,
+          onChange: (v) => {
+            generateState.servings = v;
+            try { localStorage.setItem("mealy.generate.servings", String(v)); } catch {}
+          },
+        }),
+      ),
     ),
   );
 
@@ -823,6 +977,7 @@ async function viewGenerate() {
         method: "POST",
         body: JSON.stringify({
           meal_count: generateState.mealCount,
+          servings: generateState.servings,
           seed_recipe_ids: generateState.anchors.map((a) => a.id),
           style_note: generateState.styleNote,
           pantry: generateState.pantry,
@@ -1102,7 +1257,11 @@ function recipeMeta(r) {
 }
 
 async function viewRecipeDetail(id) {
-  const { recipe } = await api(`/recipes/${id}`);
+  const [{ recipe }, { config }] = await Promise.all([
+    api(`/recipes/${id}`),
+    api("/config"),
+  ]);
+  const adamTargets = readAdamTargets(config);
   // The full meal object is in recipe.recipe
   const meal = recipe.recipe || {
     id: recipe.meal_id,
@@ -1155,7 +1314,7 @@ async function viewRecipeDetail(id) {
       meal.description ? el("p", { class: "italic-lede" }, meal.description) : null,
     ),
     tagsRow,
-    mealBlock(meal, 1, recipe.source_plan_id || ""),
+    mealBlock(meal, 1, recipe.source_plan_id || "", { adamTargets }),
   );
 
   // Notes
