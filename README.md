@@ -6,17 +6,19 @@ No cloud APIs. No accounts. Runs in Docker, points at whatever LLM endpoint you 
 
 ## Features
 
-- **Weekly plan generation.** Configurable cron-style schedule (day + hour) or one-off "run now". The LLM is prompted with active preferences and a light seasonal hint.
-- **Single-meal regen.** Don't like one of the dinners? Hit the redo button — the LLM gets the rest of the plan as context and is told to avoid the replaced meal in cuisine, protein, and style. Grocery list rebuilds automatically.
-- **Preference learning.** Free-text feedback on a plan is parsed into structured `like` / `dislike` / `avoid` / `prefer` entries on the next scheduled run.
-- **Saved recipes.** Star a meal to keep it; the saved list seeds future plans.
+- **Weekly plan generation.** Configurable cron-style schedule (day + hour) or one-off "run now". The LLM is prompted with active preferences, a seasonal produce hint, recent meals to avoid repetition, and any optional nutrition targets.
+- **Single-meal regen — swap or tune.** Don't like one of the dinners? Swap it (LLM produces a different cuisine/protein/style) or tune it (keeps the dish recognizable, applies your steering notes). Prior versions are preserved as a per-meal history.
+- **Per-meal feedback.** Free-text feedback pinned to individual dishes, surfaced back to the next plan and parsed into structured `like` / `dislike` / `allergy` / `staple` / `note` preferences.
+- **Saved recipes with auto-tags.** Star a meal to keep it. Tags (cuisine, protein, method) are applied by the LLM on save; the recipe library filters by tag.
+- **A.D.A.M.** — *Adjustable Dinner Allowance Macros.* Optional per-serving targets (calories, protein, carbs, fat, fiber). Injected into the prompt with a soft ±15% guardrail; meal cards render chip readouts of the model's per-serving estimate vs your target.
+- **Editable seasonal table.** Twelve-month produce defaults for Vancouver, BC. Override any month inline from Settings or the current-month hint on Generate — click, edit, blur to save.
+- **Inline servings rescale.** Click "Serves N" on a meal card to change the serving count; ingredient quantities scale proportionately (handles integers, decimals, simple and mixed fractions, ranges; snaps to whole numbers and common fractions). Grocery list rebuilds.
 - **Self-contained.** SQLite (single file in `./data`), vanilla-JS frontend, self-hosted woff2 fonts fetched at build time — no CDN at runtime.
 
 ## Stack
 
-- Node 22+
-- Hono (`/api/*`) + static frontend from `./web`
-- `better-sqlite3` for storage
+- Node 22+ (uses the built-in `node:sqlite` module — no native deps to compile)
+- Hono (`/api/*`) + static vanilla-JS frontend from `./web`
 - An OpenAI-compatible local LLM endpoint (defaults assume Ollama at `host.docker.internal:11434` with `qwen3:14b`)
 
 ## Run with Docker
@@ -45,7 +47,16 @@ Same env vars (`LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY`, `LLM_QWEN_MODE`, `POR
 
 ## Configuration
 
-Schedule, system prompt, and meal count are stored in the `app_config` table and editable from the Settings tab in the UI — no restart needed; the scheduler re-reads on each minute tick.
+Everything user-tunable lives in the `meal_planner_config` table and is editable from the Settings tab — no restart needed; the scheduler re-reads on each minute tick.
+
+Settings sections (in order):
+
+- **Preferences** — typed `like` / `dislike` / `allergy` / `staple` / `note` entries that feed every prompt.
+- **Seasonal produce** — twelve-month table with per-month produce + notes. Overrides live in the `seasonal_overrides` config key and merge over the in-code defaults.
+- **A.D.A.M.** — five optional per-serving macro targets (`adam_calories`, `adam_protein_g`, `adam_carbs_g`, `adam_fat_g`, `adam_fiber_g`). Blank = ignored.
+- **Scheduler** — auto-generate toggle, meals per plan, day-of-week, hour. Toggle off hides the rest of the section.
+- **System prompt** — the editable preamble that prefixes every LLM call. The JSON schema suffix is kept in code so the response shape stays valid.
+- **System health** — LLM reachability + the raw `/api/llm/health` diagnostics.
 
 ## Layout
 
